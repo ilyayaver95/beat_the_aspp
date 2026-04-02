@@ -1,5 +1,40 @@
-## created by virtualenv automatically
-#*
+# ── Secrets & Environment ──────────────────────────────────────────
 .env
-.env.local
-.env*.local
+.env.*
+!.env.example
+
+# ── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# ── Virtual Environment ───────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── IDE ───────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Claude Code ───────────────────────────────────────────────────
+.claude/
+
+# ── OS files ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Reports (generated, large HTML files) ─────────────────────────
+reports/*.html
+
+# ── Analysis cache (contains price data, not secrets) ─────────────
+data/analyses/

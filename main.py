@@ -8,6 +8,11 @@ USAGE:
   python main.py --ticker AAPL --period 6mo
   python main.py --ticker MSFT --no-stream
 
+LLM PROVIDER OPTIONS:
+  python main.py --ticker CRWD --llm api           # Anthropic Claude (default, paid)
+  python main.py --ticker CRWD --llm ollama        # Local Ollama (free, llama3.2)
+  python main.py --ticker CRWD --llm ollama --ollama-model mistral
+
 WHAT HAPPENS WHEN YOU RUN THIS:
   1. Loads your ANTHROPIC_API_KEY from .env
   2. Calls orchestrator.run_analysis(ticker)
@@ -84,29 +89,64 @@ Examples:
         action="store_true",
         help="Disable streaming output (waits for full response)"
     )
+    parser.add_argument(
+        "--llm",
+        default="api",
+        choices=["api", "ollama"],
+        help=(
+            "LLM provider to use.\n"
+            "  api    = Anthropic Claude (requires ANTHROPIC_API_KEY, paid)\n"
+            "  ollama = Local Ollama     (free, requires Ollama installed)"
+        )
+    )
+    parser.add_argument(
+        "--ollama-model",
+        default="llama3.2",
+        metavar="MODEL",
+        help=(
+            "Ollama model name (only used with --llm ollama). "
+            "Default: llama3.2. "
+            "Other options: llama3.1:8b, mistral, qwen2.5:7b"
+        )
+    )
 
     args = parser.parse_args()
     ticker = args.ticker.upper()
 
-    # ── Check API key ──────────────────────────────────────────────────
-    if not os.getenv("ANTHROPIC_API_KEY"):
+    # ── Check requirements per provider ────────────────────────────────
+    if args.llm == "api" and not os.getenv("ANTHROPIC_API_KEY"):
         console.print(
             "[bold red]ERROR:[/bold red] ANTHROPIC_API_KEY not found.\n"
             "1. Copy .env.example to .env\n"
-            "2. Add your API key from https://console.anthropic.com/",
+            "2. Add your API key from https://console.anthropic.com/\n"
+            "\n[dim]Or run for free with: python main.py --ticker "
+            f"{ticker} --llm ollama[/dim]",
             style="red"
         )
         sys.exit(1)
 
     # ── Print header ───────────────────────────────────────────────────
+    if args.llm == "ollama":
+        model_display = f"Ollama / {args.ollama_model}"
+        provider_note = "[yellow]Free local model[/yellow]"
+    else:
+        model_display = "claude-opus-4-6"
+        provider_note = "[cyan]Anthropic API[/cyan]"
+
     console.print(Panel.fit(
         f"[bold cyan]Beat the ASPP[/bold cyan]\n"
         f"[dim]AI-Powered Stock Evaluator[/dim]\n\n"
         f"Ticker: [bold yellow]{ticker}[/bold yellow] | "
         f"Period: {args.period} | "
-        f"Model: claude-opus-4-6",
+        f"Model: {model_display} ({provider_note})",
         border_style="cyan"
     ))
+
+    if args.llm == "ollama":
+        console.print(
+            f"\n[yellow]Using local Ollama ({args.ollama_model}). "
+            "Quality may vary vs Claude. Make sure Ollama is running.[/yellow]\n"
+        )
 
     # ── Run the full analysis ──────────────────────────────────────────
     try:
@@ -114,7 +154,12 @@ Examples:
             ticker=ticker,
             period=args.period,
             stream_output=not args.no_stream,
+            llm_provider=args.llm,
+            llm_model=args.ollama_model,
         )
+    except ConnectionError as e:
+        console.print(f"\n[bold red]Connection Error:[/bold red] {e}", style="red")
+        sys.exit(1)
     except ValueError as e:
         console.print(f"\n[bold red]Error:[/bold red] {e}", style="red")
         console.print(
@@ -126,10 +171,10 @@ Examples:
         raise
 
     # ── Print formatted summary ────────────────────────────────────────
-    _print_summary(report)
+    _print_summary(report, model_display)
 
 
-def _print_summary(report: FinalReport):
+def _print_summary(report: FinalReport, model_display: str = "claude-opus-4-6"):
     """
     Print a formatted summary table of the final report using Rich.
 
@@ -221,7 +266,7 @@ def _print_summary(report: FinalReport):
         for item in report.watch_for[:4]:
             console.print(f"  → {item}", style="dim")
 
-    console.print(f"\n[dim]Report generated: {report.report_date} | Model: claude-opus-4-6[/dim]\n")
+    console.print(f"\n[dim]Report generated: {report.report_date} | Model: {model_display}[/dim]\n")
 
 
 if __name__ == "__main__":

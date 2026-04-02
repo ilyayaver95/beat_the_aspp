@@ -81,8 +81,8 @@ class TechnicalReport(BaseModel):
     )
 
     score: float = Field(..., ge=0, le=10, description="Technical score 0-10")
-    summary: str = Field(..., description="2-3 sentence technical narrative")
-    short_term_outlook: str = Field(..., description="Outlook for next 1-4 weeks")
+    summary: str = Field(..., description="1-2 sentences max, data-driven")
+    short_term_outlook: str = Field(..., description="1 sentence: outlook for next 1-4 weeks")
 
 
 # ─────────────────────────────────────────────
@@ -93,7 +93,7 @@ class FundamentalMetric(BaseModel):
     """A single fundamental metric with its value and grade."""
     value: Optional[float] = None
     grade: str = Field(..., description="A+ / A / B / C / D / F")
-    comment: str = Field(..., description="One-line interpretation")
+    comment: str = Field(..., description="Max 5 words, specific data")
 
 
 class FundamentalReport(BaseModel):
@@ -134,9 +134,9 @@ class FundamentalReport(BaseModel):
     revenue_ttm_billions: Optional[float] = None
 
     score: float = Field(..., ge=0, le=10, description="Fundamental score 0-10")
-    summary: str = Field(..., description="2-3 sentence fundamental narrative")
-    key_strengths: list[str] = Field(default_factory=list)
-    key_concerns: list[str] = Field(default_factory=list)
+    summary: str = Field(..., description="1-2 sentences max, cite key numbers")
+    key_strengths: list[str] = Field(default_factory=list, description="Max 3, each ≤8 words")
+    key_concerns: list[str] = Field(default_factory=list, description="Max 3, each ≤8 words")
 
 
 # ─────────────────────────────────────────────
@@ -183,7 +183,7 @@ class SentimentReport(BaseModel):
     )
 
     score: float = Field(..., ge=0, le=10, description="Sentiment score 0-10")
-    summary: str = Field(..., description="2-3 sentence sentiment narrative")
+    summary: str = Field(..., description="1-2 sentences max")
 
 
 # ─────────────────────────────────────────────

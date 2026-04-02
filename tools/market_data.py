@@ -71,7 +71,7 @@ def get_market_data(ticker: str, period: str = "1y") -> dict:
     moving_averages = _compute_moving_averages(df)
 
     # --- Detect candlestick patterns ---
-    patterns = _detect_patterns(df)
+    patterns = _detect_patterns(df) + _detect_chart_patterns(df)
 
     # --- Support & Resistance levels ---
     support, resistance = _find_support_resistance(df)
@@ -259,6 +259,136 @@ def _detect_patterns(df: pd.DataFrame) -> list[str]:
             and c3["Close"] < (c1["Open"] + c1["Close"]) / 2  # Closes below C1 midpoint
         ):
             patterns.append(f"Evening Star around {date_str} (3-candle bearish reversal)")
+
+    return patterns
+
+
+def _detect_chart_patterns(df: pd.DataFrame) -> list[str]:
+    """
+    Detect multi-bar chart patterns over the full historical data.
+
+    Patterns detected:
+      - Double Top:              Two similar peaks → bearish reversal
+      - Double Bottom:           Two similar troughs → bullish reversal
+      - Head & Shoulders (Top):  3 peaks, middle highest → bearish
+      - Inv. Head & Shoulders:   3 troughs, middle lowest → bullish
+      - Rounding Bottom:         Slow U-shaped recovery → bullish
+      - Cup & Handle:            Rounding bottom + small pullback → bullish
+    """
+    patterns = []
+    n = len(df)
+    if n < 40:
+        return patterns
+
+    close = df["Close"].values
+    high  = df["High"].values
+    low   = df["Low"].values
+
+    # ── Identify swing highs and swing lows (window = 8 bars each side) ──
+    window = 8
+    sh_idx: list[int] = []  # swing-high indices
+    sl_idx: list[int] = []  # swing-low  indices
+
+    for i in range(window, n - window):
+        if high[i] == max(high[i - window : i + window + 1]):
+            sh_idx.append(i)
+        if low[i]  == min(low[i  - window : i + window + 1]):
+            sl_idx.append(i)
+
+    # ── Double Top ────────────────────────────────────────────────────
+    if len(sh_idx) >= 2:
+        h1i, h2i = sh_idx[-2], sh_idx[-1]
+        h1,  h2  = high[h1i], high[h2i]
+        if h2i - h1i >= 10 and abs(h1 - h2) / max(h1, h2) < 0.03:
+            neckline = float(min(low[h1i : h2i + 1]))
+            date_str = df.index[h2i].strftime("%Y-%m-%d")
+            patterns.append(
+                f"Double Top on {date_str} (bearish reversal — neckline: ${neckline:.2f})"
+            )
+
+    # ── Double Bottom ─────────────────────────────────────────────────
+    if len(sl_idx) >= 2:
+        l1i, l2i = sl_idx[-2], sl_idx[-1]
+        l1,  l2  = low[l1i], low[l2i]
+        if l2i - l1i >= 10 and abs(l1 - l2) / max(l1, l2) < 0.03:
+            target = float(max(high[l1i : l2i + 1]))
+            date_str = df.index[l2i].strftime("%Y-%m-%d")
+            patterns.append(
+                f"Double Bottom on {date_str} (bullish reversal — target: ${target:.2f})"
+            )
+
+    # ── Head & Shoulders (Top) ────────────────────────────────────────
+    if len(sh_idx) >= 3:
+        s1i, hi, s2i = sh_idx[-3], sh_idx[-2], sh_idx[-1]
+        s1, hd, s2   = high[s1i], high[hi], high[s2i]
+        if (
+            hd > s1 * 1.02 and hd > s2 * 1.02          # head is higher
+            and abs(s1 - s2) / max(s1, s2) < 0.06       # shoulders similar
+            and hi - s1i >= 5 and s2i - hi >= 5          # decent spacing
+        ):
+            neckline = (float(min(low[s1i : hi + 1])) + float(min(low[hi : s2i + 1]))) / 2
+            date_str = df.index[s2i].strftime("%Y-%m-%d")
+            patterns.append(
+                f"Head & Shoulders on {date_str} (bearish — neckline: ${neckline:.2f})"
+            )
+
+    # ── Inverse Head & Shoulders ──────────────────────────────────────
+    if len(sl_idx) >= 3:
+        s1i, hi, s2i = sl_idx[-3], sl_idx[-2], sl_idx[-1]
+        s1, hd, s2   = low[s1i], low[hi], low[s2i]
+        if (
+            hd < s1 * 0.98 and hd < s2 * 0.98
+            and abs(s1 - s2) / max(s1, s2) < 0.06
+            and hi - s1i >= 5 and s2i - hi >= 5
+        ):
+            neckline = (float(max(high[s1i : hi + 1])) + float(max(high[hi : s2i + 1]))) / 2
+            date_str = df.index[s2i].strftime("%Y-%m-%d")
+            patterns.append(
+                f"Inv. Head & Shoulders on {date_str} (bullish reversal — neckline: ${neckline:.2f})"
+            )
+
+    # ── Rounding Bottom ───────────────────────────────────────────────
+    if n >= 60:
+        seg = df.tail(min(n, 100))
+        lows = seg["Low"].values
+        m = len(lows)
+        q = m // 4
+        first_avg = float(np.mean(lows[:q]))
+        mid_avg   = float(np.mean(lows[m // 2 - q // 2 : m // 2 + q // 2]))
+        last_avg  = float(np.mean(lows[-q:]))
+        # U-shape: mid is lowest, start/end are similar
+        if (
+            mid_avg < first_avg * 0.97
+            and mid_avg < last_avg  * 0.97
+            and abs(first_avg - last_avg) / first_avg < 0.08
+        ):
+            date_str = seg.index[-1].strftime("%Y-%m-%d")
+            patterns.append(
+                f"Rounding Bottom on {date_str} (bullish — gradual accumulation base)"
+            )
+
+    # ── Cup & Handle ──────────────────────────────────────────────────
+    if n >= 80:
+        cup_seg    = df.iloc[-80 : -8]
+        handle_seg = df.tail(8)
+        cup_lows   = cup_seg["Low"].values
+        m = len(cup_lows)
+        q = m // 4
+        first_avg = float(np.mean(cup_lows[:q]))
+        mid_avg   = float(np.mean(cup_lows[m // 2 - q // 2 : m // 2 + q // 2]))
+        last_avg  = float(np.mean(cup_lows[-q:]))
+        cup_rim   = float(cup_seg["High"].max())
+        handle_low = float(handle_seg["Low"].min())
+        pullback   = (cup_rim - handle_low) / cup_rim if cup_rim > 0 else 1.0
+        if (
+            mid_avg < first_avg * 0.97
+            and mid_avg < last_avg  * 0.97
+            and 0.02 <= pullback <= 0.15
+        ):
+            date_str = handle_seg.index[-1].strftime("%Y-%m-%d")
+            patterns.append(
+                f"Cup & Handle on {date_str} (bullish — breakout above ${cup_rim:.2f})"
+            )
 
     return patterns
 

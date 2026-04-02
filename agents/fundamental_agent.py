@@ -135,9 +135,10 @@ SCORING:
     3-4  = Concerning, multiple red flags
     0-2  = Serious fundamental issues
 
-OUTPUT:
-  Be specific in comments (e.g., "Revenue grew 12% driven by DoD contracts" not "revenue growth is good").
-  List actual key strengths and concerns based on the data.
+OUTPUT STYLE — BE BRIEF:
+  metric comments: max 5 words, use numbers (e.g., "12% YoY, DoD-driven" not "revenue growth is strong")
+  summary: 1-2 sentences, cite 2-3 actual numbers from the data
+  key_strengths / key_concerns: max 3 each, ≤8 words per item
   Return ONLY the structured JSON matching the output schema."""
 
 

@@ -27,12 +27,15 @@ from models.report import TechnicalReport, FundamentalReport, SentimentReport, F
 from agents.technical_agent import run_technical_agent
 from agents.fundamental_agent import run_fundamental_agent
 from agents.sentiment_agent import run_sentiment_agent
+from llm_client import create_llm_client
 
 
 def run_analysis(
     ticker: str,
     period: str = "1y",
     stream_output: bool = True,
+    llm_provider: str = "api",
+    llm_model: str = None,
 ) -> FinalReport:
     """
     Main orchestration function. Runs all 3 agents in parallel,
@@ -42,11 +45,13 @@ def run_analysis(
         ticker:        Stock ticker to analyze (e.g., "DRS")
         period:        Historical price period for technical analysis
         stream_output: If True, streams the synthesis to stdout in real-time
+        llm_provider:  "api" (Anthropic Claude) or "ollama" (local Ollama)
+        llm_model:     Override model name for Ollama (e.g., "llama3.1:8b")
 
     Returns:
         FinalReport — the complete analyst verdict
     """
-    client = anthropic.Anthropic()
+    client = create_llm_client(llm_provider, llm_model)
 
     print(f"\n{'='*60}")
     print(f"  ANALYZING: {ticker.upper()}")
@@ -74,9 +79,9 @@ def run_analysis(
                     fund_report = result                 # FundamentalReport
                 elif agent_name == "sentiment":
                     sent_report, news_articles = result  # (SentimentReport, articles)
-                print(f"  ✓ {agent_name.capitalize()} agent complete")
+                print(f"  [OK] {agent_name.capitalize()} agent complete")
             except Exception as e:
-                print(f"  ✗ {agent_name.capitalize()} agent failed: {e}")
+                print(f"  [FAIL] {agent_name.capitalize()} agent failed: {e}")
                 import traceback; traceback.print_exc()
 
     # Fallbacks for failed agents
@@ -90,9 +95,9 @@ def run_analysis(
         news_articles = []
 
     # ── STEP 2: Synthesize into final report ──────────────────────────
-    print(f"\n{'─'*60}")
+    print(f"\n{'-'*60}")
     print(f"  SYNTHESIZING ANALYST REPORT...")
-    print(f"{'─'*60}\n")
+    print(f"{'-'*60}\n")
 
     final_report = _synthesize(
         ticker=ticker,
@@ -103,7 +108,12 @@ def run_analysis(
         stream=stream_output,
     )
 
-    # ── STEP 3: Generate HTML report ──────────────────────────────────
+    # ── STEP 3: Save structured analysis for scanner ────────────────
+    from analysis_store import save_analysis
+    json_path = save_analysis(ticker, tech_report, fund_report, sent_report, final_report)
+    print(f"\n  Analysis JSON saved: {json_path}")
+
+    # ── STEP 4: Generate HTML report ──────────────────────────────────
     from report_generator import generate_html_report
     html_path = generate_html_report(
         ticker=ticker,
@@ -113,6 +123,7 @@ def run_analysis(
         final_report=final_report,
         market_data=market_data,
         news_articles=news_articles,
+        model_name=client.get_model_name(),
     )
     if html_path:
         print(f"\n  HTML report saved: {html_path}")
@@ -125,13 +136,19 @@ def _synthesize(
     tech: TechnicalReport,
     fund: FundamentalReport,
     sent: SentimentReport,
-    client: anthropic.Anthropic,
+    client,
     stream: bool = True,
 ) -> FinalReport:
     """
-    Call Claude Opus 4.6 with Adaptive Thinking to synthesize all
-    three agent reports into a final analyst verdict.
+    Synthesize all three agent reports into a final analyst verdict.
+    Works with both Anthropic and Ollama clients.
+
+    Anthropic: uses adaptive thinking + effort:high for maximum quality.
+    Ollama:    uses plain completion (no extended thinking support).
     """
+    from llm_client import AnthropicLLMClient
+    is_anthropic = isinstance(client, AnthropicLLMClient)
+
     system_prompt = _build_synthesis_system_prompt()
     user_prompt = _build_synthesis_user_prompt(ticker, tech, fund, sent)
 
@@ -141,18 +158,22 @@ def _synthesize(
         print(f"  Composite Score (pre-synthesis): {composite}/10")
         print(f"  Tech: {tech.score} x 35% | Fund: {fund.score} x 45% | Sent: {sent.score} x 20%")
         print(f"\n{'='*60}")
-        print(f"  ANALYST REPORT — {ticker.upper()}")
+        print(f"  ANALYST REPORT - {ticker.upper()}")
         print(f"{'='*60}\n")
 
-        full_text = ""
-        with client.messages.stream(
+        # Build kwargs — Anthropic-specific params only sent to Anthropic
+        stream_kwargs = dict(
             model="claude-opus-4-6",
             max_tokens=8192,
-            thinking={"type": "adaptive"},
-            output_config={"effort": "high"},
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
-        ) as stream_obj:
+        )
+        if is_anthropic:
+            stream_kwargs["thinking"] = {"type": "adaptive"}
+            stream_kwargs["output_config"] = {"effort": "high"}
+
+        full_text = ""
+        with client.messages.stream(**stream_kwargs) as stream_obj:
             for event in stream_obj:
                 if (
                     hasattr(event, "type")
@@ -169,15 +190,18 @@ def _synthesize(
         final_report = _parse_streamed_report(full_text, ticker, tech, fund, sent, composite, client)
 
     else:
-        response = client.messages.parse(
+        parse_kwargs = dict(
             model="claude-opus-4-6",
             max_tokens=8192,
-            thinking={"type": "adaptive"},
-            output_config={"effort": "high"},
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
             output_format=FinalReport,
         )
+        if is_anthropic:
+            parse_kwargs["thinking"] = {"type": "adaptive"}
+            parse_kwargs["output_config"] = {"effort": "high"}
+
+        response = client.messages.parse(**parse_kwargs)
         final_report = response.parsed_output
 
     final_report.ticker = ticker
