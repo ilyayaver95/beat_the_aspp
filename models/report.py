@@ -28,57 +28,68 @@ from pydantic import BaseModel, Field
 # ─────────────────────────────────────────────
 
 class MovingAverages(BaseModel):
-    """Current price relative to key moving averages."""
-    ma20: Optional[float] = Field(None, description="20-period SMA")
-    ma50: Optional[float] = Field(None, description="50-period SMA")
+    """Current price relative to key moving averages (EMA 20/50, SMA 150/200)."""
+    ma20: Optional[float] = Field(None, description="20-period EMA")
+    ma50: Optional[float] = Field(None, description="50-period EMA")
     ma100: Optional[float] = Field(None, description="100-period SMA")
     ma150: Optional[float] = Field(None, description="150-period SMA")
     ma200: Optional[float] = Field(None, description="200-period SMA")
     price_vs_ma20: Optional[str] = Field(None, description="'above' or 'below'")
     price_vs_ma50: Optional[str] = Field(None, description="'above' or 'below'")
+    price_vs_ma150: Optional[str] = Field(None, description="'above' or 'below'")
     price_vs_ma200: Optional[str] = Field(None, description="'above' or 'below'")
-    golden_cross: bool = Field(False, description="MA50 crossed above MA200 recently")
-    death_cross: bool = Field(False, description="MA50 crossed below MA200 recently")
+    golden_cross: bool = Field(False, description="EMA50 crossed above SMA200 recently")
+    death_cross: bool = Field(False, description="EMA50 crossed below SMA200 recently")
 
 
 class TechnicalReport(BaseModel):
     """
     Structured output from the Technical Analysis Agent.
-    Claude fills this in after analyzing candle data and indicators.
+    Most data is computed in code; Claude adds scores and narrative.
     """
     ticker: str = Field(..., description="Stock ticker symbol")
     current_price: float = Field(..., description="Latest closing price")
     trend: str = Field(..., description="Overall trend: Bullish / Bearish / Sideways")
     trend_strength: str = Field(..., description="Strength: Strong / Moderate / Weak")
 
-    # Candlestick patterns detected in recent candles
+    # Chart patterns (Cup & Handle, VCP, Flat Base — computed in code)
     key_patterns: list[str] = Field(
         default_factory=list,
-        description="List of detected candlestick patterns (e.g., 'Hammer on 2024-12-10')"
+        description="Chart patterns detected (Cup & Handle, VCP, Flat Base, etc.)"
     )
 
     moving_averages: MovingAverages = Field(..., description="MA values and price positions")
 
-    # Key price levels
+    # RSI
+    rsi_value: Optional[float] = Field(None, description="Current RSI(14) value")
+    rsi_condition: Optional[str] = Field(None, description="overbought/oversold/neutral/bullish_momentum/bearish_momentum")
+    rsi_divergence: Optional[str] = Field(None, description="bearish/bullish divergence or null")
+
+    # ATR
+    atr_value: Optional[float] = Field(None, description="ATR(14) value")
+    atr_pct: Optional[float] = Field(None, description="ATR as % of price")
+
+    # Volume analysis
+    volume_signal: Optional[str] = Field(None, description="accumulation/distribution/quiet/neutral")
+    volume_description: Optional[str] = Field(None, description="Volume analysis description")
+
+    # Key price levels (max 3 each — clean chart)
     support_levels: list[float] = Field(
         default_factory=list,
-        description="Key support price levels, most recent first"
+        description="Key support levels, nearest first (max 3)"
     )
     resistance_levels: list[float] = Field(
         default_factory=list,
-        description="Key resistance price levels, nearest first"
+        description="Key resistance levels, nearest first (max 3)"
     )
 
-    # Candle anatomy of the most recent candle
-    last_candle_body_pct: Optional[float] = Field(
-        None, description="Body size as % of full candle range (0-100)"
-    )
-    last_candle_upper_wick_pct: Optional[float] = Field(
-        None, description="Upper wick as % of full candle range"
-    )
-    last_candle_lower_wick_pct: Optional[float] = Field(
-        None, description="Lower wick as % of full candle range"
-    )
+    # Buy/Sell zones (computed in code)
+    buy_zone: Optional[float] = Field(None, description="Suggested buy zone price")
+    buy_reasons: list[str] = Field(default_factory=list, description="Why this buy zone")
+    sell_zone: Optional[float] = Field(None, description="Suggested sell/target price")
+    sell_reasons: list[str] = Field(default_factory=list, description="Why this sell zone")
+    action: Optional[str] = Field(None, description="buy_on_pullback/watch_for_entry/take_profits/hold/avoid")
+    action_reason: Optional[str] = Field(None, description="One-line action rationale")
 
     score: float = Field(..., ge=0, le=10, description="Technical score 0-10")
     summary: str = Field(..., description="1-2 sentences max, data-driven")

@@ -28,6 +28,7 @@ from agents.technical_agent import run_technical_agent
 from agents.fundamental_agent import run_fundamental_agent
 from agents.sentiment_agent import run_sentiment_agent
 from llm_client import create_llm_client
+from cost_tracker import set_context
 
 
 def run_analysis(
@@ -149,6 +150,7 @@ def _synthesize(
     from llm_client import AnthropicLLMClient
     is_anthropic = isinstance(client, AnthropicLLMClient)
 
+    set_context(ticker, "synthesis")
     system_prompt = _build_synthesis_system_prompt()
     user_prompt = _build_synthesis_user_prompt(ticker, tech, fund, sent)
 
@@ -266,6 +268,7 @@ Think through where signals agree, where they conflict, and what matters most.""
 
 def _parse_streamed_report(text, ticker, tech, fund, sent, composite, client) -> FinalReport:
     """Convert the streamed analyst narrative into a structured FinalReport."""
+    set_context(ticker, "synthesis_parse")
     response = client.messages.parse(
         model="claude-opus-4-6",
         max_tokens=4096,

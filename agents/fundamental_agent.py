@@ -21,6 +21,7 @@ GRADING SYSTEM (golden standards from CFA/value investing principles):
 import anthropic
 from models.report import FundamentalReport, FundamentalMetric
 from tools.financial_data import get_financial_data
+from cost_tracker import set_context
 
 
 def run_fundamental_agent(
@@ -40,6 +41,8 @@ def run_fundamental_agent(
     if client is None:
         client = anthropic.Anthropic()
 
+    set_context(ticker, "fundamental_agent")
+
     # ── Step 1: Fetch financial data ───────────────────────────────────
     data = get_financial_data(ticker)
 
@@ -51,7 +54,7 @@ def run_fundamental_agent(
     print(f"  [fundamental_agent] Calling Claude for {ticker} fundamental analysis...")
 
     response = client.messages.parse(
-        model="claude-opus-4-6",
+        model="claude-sonnet-4-6",
         max_tokens=4096,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],

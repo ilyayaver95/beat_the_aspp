@@ -1,21 +1,17 @@
 """
 tools/market_data.py
 ====================
-Fetches OHLCV (Open, High, Low, Close, Volume) candlestick data
-from Yahoo Finance using the yfinance library.
+Fetches OHLCV data and computes all technical indicators in pure Python/pandas.
 
-This is the data source for Agent 1 (Technical Analysis).
-
-WHAT THIS MODULE PROVIDES:
-  - Raw candle data (daily & weekly)
-  - Pre-computed moving averages (SMA 20/50/100/150/200)
-  - Detected candlestick patterns (pure pandas, no TA-Lib needed)
-  - Support & Resistance levels via swing high/low detection
-  - Candle anatomy for the most recent candle
-
-USAGE:
-  from tools.market_data import get_market_data
-  data = get_market_data("DRS", period="1y")
+Micha Stocks style analysis — all decisions are hardcoded, no LLM needed for:
+  - EMA/SMA (20, 50, 150, 200) with dynamic support detection
+  - RSI (14) with overbought/oversold and divergence detection
+  - ATR (14) for volatility measurement
+  - Volume analysis: institutional buying vs distribution
+  - Chart patterns: Cup & Handle, VCP, Flat Base
+  - Gap detection (up/down gaps)
+  - Support & Resistance as "areas of interest"
+  - Buy/Sell zone computation
 """
 
 import pandas as pd
@@ -28,21 +24,7 @@ def get_market_data(ticker: str, period: str = "1y") -> dict:
     """
     Fetch and process all market data needed for technical analysis.
 
-    Args:
-        ticker: Stock ticker symbol (e.g., "DRS", "AAPL")
-        period: Data period — "6mo", "1y", "2y" (Yahoo Finance format)
-
-    Returns:
-        Dictionary with keys:
-          - df: Raw OHLCV DataFrame (daily candles)
-          - df_weekly: Weekly candle DataFrame
-          - moving_averages: Dict of SMA values
-          - patterns: List of detected pattern strings
-          - support_levels: List of support prices
-          - resistance_levels: List of resistance prices
-          - last_candle: Dict with anatomy of most recent candle
-          - company_name: Full company name
-          - current_price: Latest closing price
+    Returns dict with all computed indicators — ready for charting and LLM summary.
     """
     print(f"  [market_data] Fetching candles for {ticker}...")
 
@@ -50,34 +32,37 @@ def get_market_data(ticker: str, period: str = "1y") -> dict:
 
     # --- Fetch daily candles ---
     df = tk.history(period=period, interval="1d")
-
     if df.empty:
         raise ValueError(f"No price data found for ticker '{ticker}'.")
 
-    # Ensure clean column names
     df.index = pd.to_datetime(df.index)
     df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
-    # --- Fetch weekly candles (for broader trend context) ---
+    # --- Fetch weekly candles ---
     df_weekly = tk.history(period=period, interval="1wk")
     df_weekly = df_weekly[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
-    # --- Company name ---
+    # --- Company info ---
     info = tk.info
     company_name = info.get("longName", ticker)
+    market_cap = info.get("marketCap")
     current_price = float(df["Close"].iloc[-1])
 
-    # --- Compute moving averages ---
-    moving_averages = _compute_moving_averages(df)
-
-    # --- Detect candlestick patterns ---
-    patterns = _detect_patterns(df) + _detect_chart_patterns(df)
-
-    # --- Support & Resistance levels ---
+    # --- Compute all indicators ---
+    emas = _compute_emas(df)
+    smas = _compute_smas(df)
+    rsi_data = _compute_rsi(df)
+    atr_data = _compute_atr(df)
+    volume_analysis = _analyze_volume(df)
+    patterns = _detect_chart_patterns(df)
+    gaps = _detect_gaps(df)
     support, resistance = _find_support_resistance(df)
+    swing_annotations = _find_swing_annotations(df)
+    trend = _determine_trend(df, emas, smas)
+    buy_sell = _compute_buy_sell_zones(df, support, resistance, emas, rsi_data, volume_analysis, trend)
 
-    # --- Most recent candle anatomy ---
-    last_candle = _analyze_last_candle(df)
+    # --- Combined moving averages dict (for backward compat) ---
+    moving_averages = _build_ma_dict(df, emas, smas)
 
     print(f"  [market_data] Got {len(df)} daily candles for {company_name}")
 
@@ -85,267 +70,349 @@ def get_market_data(ticker: str, period: str = "1y") -> dict:
         "df": df,
         "df_weekly": df_weekly,
         "company_name": company_name,
+        "market_cap": market_cap,
         "current_price": current_price,
         "moving_averages": moving_averages,
+        "emas": emas,
+        "smas": smas,
+        "rsi": rsi_data,
+        "atr": atr_data,
+        "volume_analysis": volume_analysis,
         "patterns": patterns,
+        "gaps": gaps,
         "support_levels": support,
         "resistance_levels": resistance,
-        "last_candle": last_candle,
+        "swing_annotations": swing_annotations,
+        "trend": trend,
+        "buy_sell_zones": buy_sell,
+        "last_candle": _analyze_last_candle(df),
     }
 
 
-def _compute_moving_averages(df: pd.DataFrame) -> dict:
-    """
-    Compute Simple Moving Averages for key periods.
+# ═══════════════════════════════════════════════════════════════════════
+#  EMA / SMA
+# ═══════════════════════════════════════════════════════════════════════
 
-    The classic 'Benjamin Cowen' MA stack: 20, 50, 100, 150, 200.
-    - MA20: Short-term momentum
-    - MA50: Medium-term trend
-    - MA200: Long-term trend (the most watched on Wall Street)
-    - Golden Cross: MA50 crosses ABOVE MA200 — bullish signal
-    - Death Cross: MA50 crosses BELOW MA200 — bearish signal
+def _compute_emas(df: pd.DataFrame) -> dict:
+    """Compute Exponential Moving Averages for 20, 50 periods."""
+    close = df["Close"]
+    emas = {}
+    for period in [20, 50]:
+        if len(df) >= period:
+            series = close.ewm(span=period, adjust=False).mean()
+            emas[f"ema{period}"] = series
+            emas[f"ema{period}_current"] = float(series.iloc[-1])
+    return emas
 
-    Returns:
-        Dict with current MA values, price position, and cross signals.
-    """
+
+def _compute_smas(df: pd.DataFrame) -> dict:
+    """Compute Simple Moving Averages for 150, 200 periods."""
+    close = df["Close"]
+    smas = {}
+    for period in [150, 200]:
+        if len(df) >= period:
+            series = close.rolling(period).mean()
+            smas[f"sma{period}"] = series
+            smas[f"sma{period}_current"] = float(series.iloc[-1])
+    return smas
+
+
+def _build_ma_dict(df: pd.DataFrame, emas: dict, smas: dict) -> dict:
+    """Build backward-compatible moving_averages dict."""
     close = df["Close"]
     current_price = float(close.iloc[-1])
-
     ma = {}
-    for period in [20, 50, 100, 150, 200]:
-        if len(df) >= period:
-            ma[f"ma{period}"] = float(close.rolling(period).mean().iloc[-1])
-        else:
-            ma[f"ma{period}"] = None
+
+    # EMA 20, 50
+    for period in [20, 50]:
+        key = f"ema{period}_current"
+        if key in emas:
+            ma[f"ma{period}"] = emas[key]
+
+    # SMA 150, 200
+    for period in [150, 200]:
+        key = f"sma{period}_current"
+        if key in smas:
+            ma[f"ma{period}"] = smas[key]
+
+    # Also compute SMA 100 for backward compat
+    if len(df) >= 100:
+        ma["ma100"] = float(close.rolling(100).mean().iloc[-1])
 
     # Price position relative to key MAs
     for period in [20, 50, 200]:
-        key = f"ma{period}"
-        if ma.get(key):
-            ma[f"price_vs_ma{period}"] = "above" if current_price > ma[key] else "below"
+        val = ma.get(f"ma{period}")
+        if val:
+            ma[f"price_vs_ma{period}"] = "above" if current_price > val else "below"
             ma[f"price_pct_from_ma{period}"] = round(
-                (current_price - ma[key]) / ma[key] * 100, 2
+                (current_price - val) / val * 100, 2
             )
 
-    # Golden Cross / Death Cross detection (look back 10 days)
+    # Price vs 150 MA
+    val150 = ma.get("ma150")
+    if val150:
+        ma["price_vs_ma150"] = "above" if current_price > val150 else "below"
+        ma["price_pct_from_ma150"] = round(
+            (current_price - val150) / val150 * 100, 2
+        )
+
+    # Golden Cross / Death Cross (EMA50 vs SMA200)
     ma["golden_cross"] = False
     ma["death_cross"] = False
-    if len(df) >= 210:  # Need enough data for both MAs
-        ma50_series = close.rolling(50).mean()
-        ma200_series = close.rolling(200).mean()
-        # Check if there was a cross in the last 20 trading days
-        lookback = min(20, len(df) - 200)
-        recent_diff = ma50_series.iloc[-lookback:] - ma200_series.iloc[-lookback:]
-        if recent_diff.iloc[0] < 0 and recent_diff.iloc[-1] > 0:
-            ma["golden_cross"] = True
-        elif recent_diff.iloc[0] > 0 and recent_diff.iloc[-1] < 0:
-            ma["death_cross"] = True
+    if "ema50" in emas and "sma200" in smas:
+        ema50_s = emas["ema50"]
+        sma200_s = smas["sma200"]
+        aligned = pd.DataFrame({"ema50": ema50_s, "sma200": sma200_s}).dropna()
+        if len(aligned) >= 20:
+            lookback = min(20, len(aligned))
+            recent_diff = aligned["ema50"].iloc[-lookback:] - aligned["sma200"].iloc[-lookback:]
+            if recent_diff.iloc[0] < 0 and recent_diff.iloc[-1] > 0:
+                ma["golden_cross"] = True
+            elif recent_diff.iloc[0] > 0 and recent_diff.iloc[-1] < 0:
+                ma["death_cross"] = True
 
     return ma
 
 
-def _detect_patterns(df: pd.DataFrame) -> list[str]:
+# ═══════════════════════════════════════════════════════════════════════
+#  RSI (14)
+# ═══════════════════════════════════════════════════════════════════════
+
+def _compute_rsi(df: pd.DataFrame, period: int = 14) -> dict:
     """
-    Detect classical candlestick patterns using pure pandas math.
-    No TA-Lib required — all patterns are computed from OHLC relationships.
+    Compute RSI and detect overbought/oversold + divergences.
 
-    Patterns detected:
-      - Doji: Indecision — open ≈ close
-      - Hammer: Reversal signal in downtrend (long lower wick)
-      - Inverted Hammer: Reversal signal (long upper wick)
-      - Shooting Star: Bearish reversal at top (long upper wick)
-      - Bullish Engulfing: Strong bullish reversal
-      - Bearish Engulfing: Strong bearish reversal
-      - Morning Star: 3-candle bullish reversal
-      - Evening Star: 3-candle bearish reversal
-
-    Only looks at the most recent 30 candles to surface relevant signals.
-
-    Returns:
-        List of strings describing each detected pattern with its date.
+    Divergence: price makes new high but RSI does not (bearish),
+                or price makes new low but RSI does not (bullish).
     """
-    # Work on a copy of recent candles
+    close = df["Close"]
+    delta = close.diff()
+
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+
+    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.fillna(50)
+
+    current_rsi = float(rsi.iloc[-1])
+
+    # Determine condition
+    if current_rsi >= 70:
+        condition = "overbought"
+    elif current_rsi <= 30:
+        condition = "oversold"
+    elif current_rsi >= 60:
+        condition = "bullish_momentum"
+    elif current_rsi <= 40:
+        condition = "bearish_momentum"
+    else:
+        condition = "neutral"
+
+    # Divergence detection (last 30 bars)
+    divergence = None
+    if len(df) >= 30:
+        recent_close = close.iloc[-30:]
+        recent_rsi = rsi.iloc[-30:]
+
+        # Find two highest peaks in price
+        price_peaks = []
+        rsi_at_peaks = []
+        for i in range(2, len(recent_close) - 2):
+            if (recent_close.iloc[i] > recent_close.iloc[i-1] and
+                recent_close.iloc[i] > recent_close.iloc[i-2] and
+                recent_close.iloc[i] > recent_close.iloc[i+1] and
+                recent_close.iloc[i] > recent_close.iloc[i+2]):
+                price_peaks.append(float(recent_close.iloc[i]))
+                rsi_at_peaks.append(float(recent_rsi.iloc[i]))
+
+        if len(price_peaks) >= 2:
+            # Bearish divergence: higher price peak, lower RSI peak
+            if price_peaks[-1] > price_peaks[-2] and rsi_at_peaks[-1] < rsi_at_peaks[-2]:
+                divergence = "bearish"
+            # Bullish divergence: lower price trough, higher RSI
+            elif price_peaks[-1] < price_peaks[-2] and rsi_at_peaks[-1] > rsi_at_peaks[-2]:
+                divergence = "bullish"
+
+    return {
+        "series": rsi,
+        "current": current_rsi,
+        "condition": condition,
+        "divergence": divergence,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  ATR (14)
+# ═══════════════════════════════════════════════════════════════════════
+
+def _compute_atr(df: pd.DataFrame, period: int = 14) -> dict:
+    """
+    Average True Range — measures volatility.
+    ATR% = ATR / current_price — tells you how "wild" the stock is.
+    """
+    high = df["High"]
+    low = df["Low"]
+    prev_close = df["Close"].shift(1)
+
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+
+    atr = tr.rolling(period).mean()
+    current_atr = float(atr.iloc[-1]) if not atr.empty else 0
+    current_price = float(df["Close"].iloc[-1])
+    atr_pct = round(current_atr / current_price * 100, 2) if current_price > 0 else 0
+
+    return {
+        "series": atr,
+        "current": round(current_atr, 2),
+        "pct": atr_pct,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  VOLUME ANALYSIS — "lie detector"
+# ═══════════════════════════════════════════════════════════════════════
+
+def _analyze_volume(df: pd.DataFrame) -> dict:
+    """
+    Micha Stocks volume analysis:
+    - High volume on green days = institutional buying (accumulation)
+    - Low volume on pullbacks = healthy, no distribution
+    - High volume on red days = distribution (selling pressure)
+    """
     recent = df.tail(30).copy()
+    avg_vol_50 = float(df["Volume"].tail(50).mean()) if len(df) >= 50 else float(df["Volume"].mean())
 
-    # ── Candle anatomy metrics ──────────────────────────────────────
-    recent["body"] = (recent["Close"] - recent["Open"]).abs()
-    recent["candle_range"] = recent["High"] - recent["Low"]
-    recent["upper_wick"] = recent["High"] - recent[["Open", "Close"]].max(axis=1)
-    recent["lower_wick"] = recent[["Open", "Close"]].min(axis=1) - recent["Low"]
-    recent["is_bullish"] = recent["Close"] > recent["Open"]
+    recent["is_green"] = recent["Close"] > recent["Open"]
+    green_days = recent[recent["is_green"]]
+    red_days = recent[~recent["is_green"]]
 
-    # Avoid division by zero
-    range_safe = recent["candle_range"].replace(0, np.nan)
-    recent["body_pct"] = recent["body"] / range_safe  # 0–1
+    avg_green_vol = float(green_days["Volume"].mean()) if len(green_days) > 0 else 0
+    avg_red_vol = float(red_days["Volume"].mean()) if len(red_days) > 0 else 0
 
-    patterns = []
+    # Count high-volume green days (>1.3x average)
+    high_vol_green = int((green_days["Volume"] > avg_vol_50 * 1.3).sum()) if len(green_days) > 0 else 0
+    # Count high-volume red days
+    high_vol_red = int((red_days["Volume"] > avg_vol_50 * 1.3).sum()) if len(red_days) > 0 else 0
 
-    for i in range(1, len(recent)):
-        row = recent.iloc[i]
-        prev = recent.iloc[i - 1]
-        date_str = recent.index[i].strftime("%Y-%m-%d")
-        rng = row["candle_range"]
+    # Volume trend: is recent volume rising or declining?
+    vol_10 = float(df["Volume"].tail(10).mean())
+    vol_50 = avg_vol_50
+    volume_trend = "rising" if vol_10 > vol_50 * 1.15 else ("declining" if vol_10 < vol_50 * 0.85 else "stable")
 
-        if rng == 0:
-            continue  # Skip holiday/no-trade candles
+    # Determine accumulation/distribution signal
+    if avg_green_vol > avg_red_vol * 1.3 and high_vol_green >= 3:
+        signal = "accumulation"
+        description = "Institutional buying detected — high volume on up days, low volume on pullbacks"
+    elif avg_red_vol > avg_green_vol * 1.3 and high_vol_red >= 3:
+        signal = "distribution"
+        description = "Distribution detected — heavy selling on red days"
+    elif volume_trend == "declining":
+        signal = "quiet"
+        description = "Volume drying up — watch for breakout"
+    else:
+        signal = "neutral"
+        description = "No clear volume signal"
 
-        # ── DOJI ────────────────────────────────────────────────────
-        # Body is tiny relative to range — market is undecided
-        if row["body_pct"] < 0.10:
-            patterns.append(f"Doji on {date_str} (indecision — watch for breakout)")
+    return {
+        "signal": signal,
+        "description": description,
+        "avg_vol_50": int(avg_vol_50),
+        "avg_green_vol": int(avg_green_vol),
+        "avg_red_vol": int(avg_red_vol),
+        "high_vol_green_days": high_vol_green,
+        "high_vol_red_days": high_vol_red,
+        "volume_trend": volume_trend,
+    }
 
-        # ── HAMMER ──────────────────────────────────────────────────
-        # Long lower wick, small body near top — bullish reversal signal
-        elif (
-            row["lower_wick"] > 2 * row["body"]
-            and row["upper_wick"] < 0.3 * rng
-            and row["is_bullish"]
-        ):
-            patterns.append(f"Hammer on {date_str} (bullish reversal signal)")
 
-        # ── INVERTED HAMMER / SHOOTING STAR ─────────────────────────
-        # Long upper wick, small body — context determines meaning
-        elif (
-            row["upper_wick"] > 2 * row["body"]
-            and row["lower_wick"] < 0.3 * rng
-        ):
-            if row["is_bullish"]:
-                patterns.append(f"Inverted Hammer on {date_str} (potential bullish reversal)")
-            else:
-                patterns.append(f"Shooting Star on {date_str} (bearish reversal warning)")
-
-        # ── BULLISH ENGULFING ────────────────────────────────────────
-        # Bullish candle fully engulfs the prior bearish candle
-        elif (
-            row["is_bullish"]
-            and not prev["is_bullish"]
-            and row["Open"] <= prev["Close"]
-            and row["Close"] >= prev["Open"]
-        ):
-            patterns.append(f"Bullish Engulfing on {date_str} (strong bullish reversal)")
-
-        # ── BEARISH ENGULFING ────────────────────────────────────────
-        # Bearish candle fully engulfs the prior bullish candle
-        elif (
-            not row["is_bullish"]
-            and prev["is_bullish"]
-            and row["Open"] >= prev["Close"]
-            and row["Close"] <= prev["Open"]
-        ):
-            patterns.append(f"Bearish Engulfing on {date_str} (strong bearish reversal)")
-
-    # ── MORNING STAR (3-candle) ──────────────────────────────────────
-    # Bearish candle → small body → Bullish candle = bottom reversal
-    for i in range(2, len(recent)):
-        c1, c2, c3 = recent.iloc[i - 2], recent.iloc[i - 1], recent.iloc[i]
-        date_str = recent.index[i].strftime("%Y-%m-%d")
-        if (
-            not c1["is_bullish"]               # C1: bearish
-            and c2["body_pct"] < 0.3           # C2: small body (indecision)
-            and c3["is_bullish"]               # C3: bullish
-            and c3["Close"] > (c1["Open"] + c1["Close"]) / 2  # Closes above C1 midpoint
-        ):
-            patterns.append(f"Morning Star around {date_str} (3-candle bullish reversal)")
-
-    # ── EVENING STAR (3-candle) ──────────────────────────────────────
-    # Bullish candle → small body → Bearish candle = top reversal
-    for i in range(2, len(recent)):
-        c1, c2, c3 = recent.iloc[i - 2], recent.iloc[i - 1], recent.iloc[i]
-        date_str = recent.index[i].strftime("%Y-%m-%d")
-        if (
-            c1["is_bullish"]                   # C1: bullish
-            and c2["body_pct"] < 0.3           # C2: small body
-            and not c3["is_bullish"]           # C3: bearish
-            and c3["Close"] < (c1["Open"] + c1["Close"]) / 2  # Closes below C1 midpoint
-        ):
-            patterns.append(f"Evening Star around {date_str} (3-candle bearish reversal)")
-
-    return patterns
-
+# ═══════════════════════════════════════════════════════════════════════
+#  CHART PATTERNS — Cup & Handle, VCP, Flat Base
+# ═══════════════════════════════════════════════════════════════════════
 
 def _detect_chart_patterns(df: pd.DataFrame) -> list[str]:
     """
-    Detect multi-bar chart patterns over the full historical data.
-
-    Patterns detected:
-      - Double Top:              Two similar peaks → bearish reversal
-      - Double Bottom:           Two similar troughs → bullish reversal
-      - Head & Shoulders (Top):  3 peaks, middle highest → bearish
-      - Inv. Head & Shoulders:   3 troughs, middle lowest → bullish
-      - Rounding Bottom:         Slow U-shaped recovery → bullish
-      - Cup & Handle:            Rounding bottom + small pullback → bullish
+    Detect Micha Stocks style patterns:
+    - Cup & Handle: rounding bottom + small pullback before breakout
+    - VCP (Volatility Contraction Pattern): tightening price swings
+    - Flat Base / Consolidation: sideways movement on declining volume
     """
     patterns = []
     n = len(df)
-    if n < 40:
-        return patterns
 
-    close = df["Close"].values
-    high  = df["High"].values
-    low   = df["Low"].values
-
-    # ── Identify swing highs and swing lows (window = 8 bars each side) ──
-    window = 8
-    sh_idx: list[int] = []  # swing-high indices
-    sl_idx: list[int] = []  # swing-low  indices
-
-    for i in range(window, n - window):
-        if high[i] == max(high[i - window : i + window + 1]):
-            sh_idx.append(i)
-        if low[i]  == min(low[i  - window : i + window + 1]):
-            sl_idx.append(i)
-
-    # ── Double Top ────────────────────────────────────────────────────
-    if len(sh_idx) >= 2:
-        h1i, h2i = sh_idx[-2], sh_idx[-1]
-        h1,  h2  = high[h1i], high[h2i]
-        if h2i - h1i >= 10 and abs(h1 - h2) / max(h1, h2) < 0.03:
-            neckline = float(min(low[h1i : h2i + 1]))
-            date_str = df.index[h2i].strftime("%Y-%m-%d")
-            patterns.append(
-                f"Double Top on {date_str} (bearish reversal — neckline: ${neckline:.2f})"
-            )
-
-    # ── Double Bottom ─────────────────────────────────────────────────
-    if len(sl_idx) >= 2:
-        l1i, l2i = sl_idx[-2], sl_idx[-1]
-        l1,  l2  = low[l1i], low[l2i]
-        if l2i - l1i >= 10 and abs(l1 - l2) / max(l1, l2) < 0.03:
-            target = float(max(high[l1i : l2i + 1]))
-            date_str = df.index[l2i].strftime("%Y-%m-%d")
-            patterns.append(
-                f"Double Bottom on {date_str} (bullish reversal — target: ${target:.2f})"
-            )
-
-    # ── Head & Shoulders (Top) ────────────────────────────────────────
-    if len(sh_idx) >= 3:
-        s1i, hi, s2i = sh_idx[-3], sh_idx[-2], sh_idx[-1]
-        s1, hd, s2   = high[s1i], high[hi], high[s2i]
+    # ── Cup & Handle ──────────────────────────────────────────────────
+    if n >= 80:
+        cup_seg = df.iloc[-80:-8]
+        handle_seg = df.tail(8)
+        cup_lows = cup_seg["Low"].values
+        m = len(cup_lows)
+        q = m // 4
+        first_avg = float(np.mean(cup_lows[:q]))
+        mid_avg = float(np.mean(cup_lows[m // 2 - q // 2: m // 2 + q // 2]))
+        last_avg = float(np.mean(cup_lows[-q:]))
+        cup_rim = float(cup_seg["High"].max())
+        handle_low = float(handle_seg["Low"].min())
+        pullback = (cup_rim - handle_low) / cup_rim if cup_rim > 0 else 1.0
         if (
-            hd > s1 * 1.02 and hd > s2 * 1.02          # head is higher
-            and abs(s1 - s2) / max(s1, s2) < 0.06       # shoulders similar
-            and hi - s1i >= 5 and s2i - hi >= 5          # decent spacing
+            mid_avg < first_avg * 0.97
+            and mid_avg < last_avg * 0.97
+            and 0.02 <= pullback <= 0.15
         ):
-            neckline = (float(min(low[s1i : hi + 1])) + float(min(low[hi : s2i + 1]))) / 2
-            date_str = df.index[s2i].strftime("%Y-%m-%d")
+            date_str = handle_seg.index[-1].strftime("%Y-%m-%d")
             patterns.append(
-                f"Head & Shoulders on {date_str} (bearish — neckline: ${neckline:.2f})"
+                f"Cup & Handle — breakout above ${cup_rim:.2f} (pullback: {pullback:.0%})"
             )
 
-    # ── Inverse Head & Shoulders ──────────────────────────────────────
-    if len(sl_idx) >= 3:
-        s1i, hi, s2i = sl_idx[-3], sl_idx[-2], sl_idx[-1]
-        s1, hd, s2   = low[s1i], low[hi], low[s2i]
-        if (
-            hd < s1 * 0.98 and hd < s2 * 0.98
-            and abs(s1 - s2) / max(s1, s2) < 0.06
-            and hi - s1i >= 5 and s2i - hi >= 5
-        ):
-            neckline = (float(max(high[s1i : hi + 1])) + float(max(high[hi : s2i + 1]))) / 2
-            date_str = df.index[s2i].strftime("%Y-%m-%d")
-            patterns.append(
-                f"Inv. Head & Shoulders on {date_str} (bullish reversal — neckline: ${neckline:.2f})"
-            )
+    # ── VCP (Volatility Contraction Pattern) ──────────────────────────
+    # Look for 3+ contracting price swings in the last 60 bars
+    if n >= 40:
+        seg = df.tail(60) if n >= 60 else df.copy()
+        highs = seg["High"].values
+        lows = seg["Low"].values
+
+        # Find swing ranges in 15-bar windows
+        window = 15
+        ranges = []
+        for start in range(0, len(seg) - window, window // 2):
+            end = min(start + window, len(seg))
+            swing_range = float(max(highs[start:end]) - min(lows[start:end]))
+            ranges.append(swing_range)
+
+        if len(ranges) >= 3:
+            contracting = all(ranges[i] < ranges[i - 1] * 0.85 for i in range(1, min(4, len(ranges))))
+            if contracting:
+                pivot = float(max(highs[-15:]))
+                patterns.append(
+                    f"VCP (Volatility Contraction) — tightening price, pivot at ${pivot:.2f}"
+                )
+
+    # ── Flat Base / Consolidation ─────────────────────────────────────
+    # Price moves sideways (< 10% range) for 20+ days on declining volume
+    if n >= 25:
+        seg = df.tail(25)
+        price_range = (float(seg["High"].max()) - float(seg["Low"].min()))
+        mid_price = (float(seg["High"].max()) + float(seg["Low"].min())) / 2
+        range_pct = price_range / mid_price if mid_price > 0 else 1
+
+        if range_pct < 0.10:
+            # Check for declining volume
+            vol_first = float(seg["Volume"].iloc[:10].mean())
+            vol_last = float(seg["Volume"].iloc[-10:].mean())
+            if vol_last < vol_first * 0.85:
+                patterns.append(
+                    f"Flat Base — tight consolidation ({range_pct:.1%} range) with declining volume"
+                )
+            else:
+                patterns.append(
+                    f"Consolidation — sideways price action ({range_pct:.1%} range)"
+                )
 
     # ── Rounding Bottom ───────────────────────────────────────────────
     if n >= 60:
@@ -354,118 +421,322 @@ def _detect_chart_patterns(df: pd.DataFrame) -> list[str]:
         m = len(lows)
         q = m // 4
         first_avg = float(np.mean(lows[:q]))
-        mid_avg   = float(np.mean(lows[m // 2 - q // 2 : m // 2 + q // 2]))
-        last_avg  = float(np.mean(lows[-q:]))
-        # U-shape: mid is lowest, start/end are similar
+        mid_avg = float(np.mean(lows[m // 2 - q // 2: m // 2 + q // 2]))
+        last_avg = float(np.mean(lows[-q:]))
         if (
             mid_avg < first_avg * 0.97
-            and mid_avg < last_avg  * 0.97
+            and mid_avg < last_avg * 0.97
             and abs(first_avg - last_avg) / first_avg < 0.08
         ):
-            date_str = seg.index[-1].strftime("%Y-%m-%d")
-            patterns.append(
-                f"Rounding Bottom on {date_str} (bullish — gradual accumulation base)"
-            )
-
-    # ── Cup & Handle ──────────────────────────────────────────────────
-    if n >= 80:
-        cup_seg    = df.iloc[-80 : -8]
-        handle_seg = df.tail(8)
-        cup_lows   = cup_seg["Low"].values
-        m = len(cup_lows)
-        q = m // 4
-        first_avg = float(np.mean(cup_lows[:q]))
-        mid_avg   = float(np.mean(cup_lows[m // 2 - q // 2 : m // 2 + q // 2]))
-        last_avg  = float(np.mean(cup_lows[-q:]))
-        cup_rim   = float(cup_seg["High"].max())
-        handle_low = float(handle_seg["Low"].min())
-        pullback   = (cup_rim - handle_low) / cup_rim if cup_rim > 0 else 1.0
-        if (
-            mid_avg < first_avg * 0.97
-            and mid_avg < last_avg  * 0.97
-            and 0.02 <= pullback <= 0.15
-        ):
-            date_str = handle_seg.index[-1].strftime("%Y-%m-%d")
-            patterns.append(
-                f"Cup & Handle on {date_str} (bullish — breakout above ${cup_rim:.2f})"
-            )
+            patterns.append("Rounding Bottom — gradual accumulation base forming")
 
     return patterns
 
 
+# ═══════════════════════════════════════════════════════════════════════
+#  GAP DETECTION
+# ═══════════════════════════════════════════════════════════════════════
+
+def _detect_gaps(df: pd.DataFrame) -> list[dict]:
+    """
+    Detect significant price gaps in recent data.
+    A gap up: today's low > yesterday's high
+    A gap down: today's high < yesterday's low
+    Only report gaps > 2% to avoid noise.
+    """
+    gaps = []
+    recent = df.tail(30)
+
+    for i in range(1, len(recent)):
+        prev = recent.iloc[i - 1]
+        curr = recent.iloc[i]
+        date_str = recent.index[i].strftime("%Y-%m-%d")
+
+        # Gap up
+        if curr["Low"] > prev["High"]:
+            gap_pct = (curr["Low"] - prev["High"]) / prev["High"] * 100
+            if gap_pct >= 2:
+                gaps.append({
+                    "type": "gap_up",
+                    "date": date_str,
+                    "pct": round(gap_pct, 1),
+                    "level": float(prev["High"]),  # gap fill level
+                })
+
+        # Gap down
+        if curr["High"] < prev["Low"]:
+            gap_pct = (prev["Low"] - curr["High"]) / prev["Low"] * 100
+            if gap_pct >= 2:
+                gaps.append({
+                    "type": "gap_down",
+                    "date": date_str,
+                    "pct": round(gap_pct, 1),
+                    "level": float(prev["Low"]),  # gap fill level
+                })
+
+    return gaps
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  SUPPORT & RESISTANCE — "areas of interest"
+# ═══════════════════════════════════════════════════════════════════════
+
 def _find_support_resistance(df: pd.DataFrame, window: int = 10) -> tuple[list, list]:
     """
-    Find support and resistance levels using swing high/low detection.
-
-    METHOD:
-      A swing LOW (support) is a candle whose Low is the lowest
-      in the surrounding `window` candles on both sides.
-      A swing HIGH (resistance) is the opposite.
-
-    We then cluster nearby levels to avoid duplicates and return
-    the most significant ones (sorted by recency).
-
-    Args:
-        df: OHLCV DataFrame
-        window: How many candles on each side to check
-
-    Returns:
-        (support_levels, resistance_levels) — lists of float prices
+    Find support and resistance using swing detection + volume confirmation.
+    Clusters nearby levels. Returns max 3 of each (clean chart).
     """
     highs = df["High"].values
     lows = df["Low"].values
+    volumes = df["Volume"].values
     n = len(df)
+    avg_vol = float(np.mean(volumes))
 
     swing_lows = []
     swing_highs = []
 
     for i in range(window, n - window):
-        # Swing low: local minimum
-        if lows[i] == min(lows[i - window : i + window + 1]):
-            swing_lows.append(lows[i])
-        # Swing high: local maximum
-        if highs[i] == max(highs[i - window : i + window + 1]):
-            swing_highs.append(highs[i])
+        if lows[i] == min(lows[i - window: i + window + 1]):
+            # Weight by volume — higher volume = more significant level
+            vol_weight = volumes[i] / avg_vol if avg_vol > 0 else 1
+            swing_lows.append((float(lows[i]), vol_weight, i))
+        if highs[i] == max(highs[i - window: i + window + 1]):
+            vol_weight = volumes[i] / avg_vol if avg_vol > 0 else 1
+            swing_highs.append((float(highs[i]), vol_weight, i))
 
-    # Cluster nearby levels (within 1% of each other)
-    def cluster_levels(levels: list, threshold_pct: float = 0.01) -> list:
+    def cluster_levels(levels: list, threshold_pct: float = 0.02) -> list:
+        """Cluster nearby levels, keeping the one with highest volume weight."""
         if not levels:
             return []
-        levels = sorted(set(levels))
+        levels = sorted(levels, key=lambda x: x[0])
         clustered = [levels[0]]
-        for level in levels[1:]:
-            if abs(level - clustered[-1]) / clustered[-1] > threshold_pct:
-                clustered.append(level)
-        return clustered
+        for level, weight, idx in levels[1:]:
+            if abs(level - clustered[-1][0]) / clustered[-1][0] <= threshold_pct:
+                # Keep the one with higher volume weight
+                if weight > clustered[-1][1]:
+                    clustered[-1] = (level, weight, idx)
+            else:
+                clustered.append((level, weight, idx))
+        # Sort by volume weight (most significant first), then take top ones
+        clustered.sort(key=lambda x: x[1], reverse=True)
+        return [round(c[0], 2) for c in clustered]
 
-    support = cluster_levels(swing_lows)
-    resistance = cluster_levels(swing_highs)
-
-    # Return most recent/relevant (last 5 of each)
     current_price = float(df["Close"].iloc[-1])
-    support = sorted(
-        [s for s in support if s < current_price],
-        reverse=True
-    )[:5]
-    resistance = sorted(
-        [r for r in resistance if r > current_price]
-    )[:5]
+    support = [s for s in cluster_levels(swing_lows) if s < current_price][:3]
+    resistance = [r for r in cluster_levels(swing_highs) if r > current_price][:3]
 
-    return [round(s, 2) for s in support], [round(r, 2) for r in resistance]
+    support.sort(reverse=True)   # nearest first
+    resistance.sort()             # nearest first
 
+    return support, resistance
+
+
+def _find_swing_annotations(df: pd.DataFrame, window: int = 12) -> list[dict]:
+    """
+    Find key swing high/low points for chart annotation (price labels).
+    Like Micha Stocks labeling key pivots on the chart.
+    """
+    highs = df["High"].values
+    lows = df["Low"].values
+    n = len(df)
+    annotations = []
+
+    for i in range(window, n - window):
+        date = df.index[i]
+        if highs[i] == max(highs[i - window: i + window + 1]):
+            annotations.append({
+                "type": "high",
+                "date": date,
+                "price": round(float(highs[i]), 2),
+            })
+        if lows[i] == min(lows[i - window: i + window + 1]):
+            annotations.append({
+                "type": "low",
+                "date": date,
+                "price": round(float(lows[i]), 2),
+            })
+
+    # Keep only the most significant ones (last 8)
+    return annotations[-8:]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  TREND DETERMINATION
+# ═══════════════════════════════════════════════════════════════════════
+
+def _determine_trend(df: pd.DataFrame, emas: dict, smas: dict) -> dict:
+    """
+    Determine trend using MA alignment and price action.
+
+    Strong uptrend:  Price > EMA20 > EMA50 > SMA150 > SMA200 (all aligned)
+    Moderate uptrend: Price above most MAs
+    Downtrend:       Price below most MAs, MAs curling down
+    """
+    current_price = float(df["Close"].iloc[-1])
+
+    ma_values = []
+    for key in ["ema20_current", "ema50_current"]:
+        if key in emas:
+            ma_values.append((key, emas[key]))
+    for key in ["sma150_current", "sma200_current"]:
+        if key in smas:
+            ma_values.append((key, smas[key]))
+
+    above_count = sum(1 for _, v in ma_values if current_price > v)
+    total = len(ma_values)
+
+    # Check MA alignment (perfect order)
+    values_only = [v for _, v in ma_values]
+    perfectly_aligned_bull = all(values_only[i] >= values_only[i + 1] for i in range(len(values_only) - 1)) if len(values_only) >= 3 else False
+    price_above_all = current_price > max(values_only) if values_only else False
+
+    # Check if price is extended (too far from EMA20)
+    extended = False
+    if "ema20_current" in emas:
+        dist_from_ema20 = (current_price - emas["ema20_current"]) / emas["ema20_current"] * 100
+        if dist_from_ema20 > 15:
+            extended = True
+
+    # EMA20 acting as dynamic support? (price bouncing off it)
+    ema20_dynamic_support = False
+    if "ema20" in emas:
+        recent_lows = df["Low"].tail(10)
+        ema20_recent = emas["ema20"].tail(10)
+        touches = sum(1 for l, e in zip(recent_lows, ema20_recent)
+                      if abs(l - e) / e < 0.015)  # within 1.5%
+        if touches >= 2:
+            ema20_dynamic_support = True
+
+    if price_above_all and perfectly_aligned_bull:
+        direction = "strong_uptrend"
+        strength = "strong"
+    elif above_count >= 3 and total >= 4:
+        direction = "uptrend"
+        strength = "moderate"
+    elif above_count <= 1 and total >= 3:
+        direction = "downtrend"
+        strength = "strong" if above_count == 0 else "moderate"
+    else:
+        direction = "sideways"
+        strength = "weak"
+
+    return {
+        "direction": direction,
+        "strength": strength,
+        "above_ma_count": above_count,
+        "total_mas": total,
+        "perfectly_aligned": perfectly_aligned_bull and price_above_all,
+        "extended": extended,
+        "ema20_dynamic_support": ema20_dynamic_support,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  BUY / SELL ZONES
+# ═══════════════════════════════════════════════════════════════════════
+
+def _compute_buy_sell_zones(
+    df: pd.DataFrame,
+    support: list,
+    resistance: list,
+    emas: dict,
+    rsi_data: dict,
+    volume_analysis: dict,
+    trend: dict,
+) -> dict:
+    """
+    Hardcoded buy/sell logic — Micha Stocks style:
+
+    BUY ZONE (look for entries):
+      - Near primary support OR EMA20/50 (dynamic support)
+      - RSI not overbought (< 65 ideal, < 70 acceptable)
+      - Volume shows accumulation or quiet (not distribution)
+      - Trend is up or sideways (not strong downtrend)
+
+    SELL ZONE (take profits / manage risk):
+      - Near primary resistance
+      - RSI overbought (> 70) or bearish divergence
+      - Price extended far above EMA20
+      - Volume shows distribution
+    """
+    current_price = float(df["Close"].iloc[-1])
+    buy_zone = None
+    sell_zone = None
+    buy_reasons = []
+    sell_reasons = []
+
+    # ── BUY ZONE ──────────────────────────────────────────────────────
+    # Primary: nearest support level
+    if support:
+        buy_zone = support[0]
+        buy_reasons.append(f"Primary support at ${support[0]:.2f}")
+
+    # Alternative: EMA20 as dynamic support if closer
+    if "ema20_current" in emas and trend["direction"] in ("uptrend", "strong_uptrend"):
+        ema20_val = emas["ema20_current"]
+        if ema20_val < current_price:
+            if buy_zone is None or abs(ema20_val - current_price) < abs(buy_zone - current_price):
+                buy_zone = round(ema20_val, 2)
+                buy_reasons.insert(0, f"EMA20 dynamic support at ${ema20_val:.2f}")
+
+    # Confidence modifiers
+    if rsi_data["condition"] == "oversold":
+        buy_reasons.append("RSI oversold — watch for reversal")
+    if volume_analysis["signal"] == "accumulation":
+        buy_reasons.append("Volume confirms accumulation")
+    if volume_analysis["signal"] == "quiet":
+        buy_reasons.append("Volume quiet — potential breakout setup")
+
+    # ── SELL ZONE ─────────────────────────────────────────────────────
+    if resistance:
+        sell_zone = resistance[0]
+        sell_reasons.append(f"Primary resistance at ${resistance[0]:.2f}")
+
+    if rsi_data["condition"] == "overbought":
+        sell_reasons.append("RSI overbought (>70)")
+    if rsi_data["divergence"] == "bearish":
+        sell_reasons.append("Bearish RSI divergence")
+    if trend["extended"]:
+        sell_reasons.append("Price extended far above EMA20")
+    if volume_analysis["signal"] == "distribution":
+        sell_reasons.append("Volume shows distribution")
+
+    # ── OVERALL ACTION ────────────────────────────────────────────────
+    if trend["direction"] == "downtrend" and volume_analysis["signal"] == "distribution":
+        action = "avoid"
+        action_reason = "Downtrend with distribution — stay away"
+    elif (trend["direction"] in ("uptrend", "strong_uptrend") and
+          rsi_data["condition"] not in ("overbought",) and
+          volume_analysis["signal"] != "distribution"):
+        if rsi_data["condition"] == "oversold" or trend.get("ema20_dynamic_support"):
+            action = "buy_on_pullback"
+            action_reason = "Uptrend — buy on pullback to support"
+        else:
+            action = "watch_for_entry"
+            action_reason = "Uptrend — wait for pullback to buy zone"
+    elif rsi_data["condition"] == "overbought" or trend["extended"]:
+        action = "take_profits"
+        action_reason = "Consider taking partial profits"
+    else:
+        action = "hold"
+        action_reason = "No clear edge — wait for setup"
+
+    return {
+        "buy_zone": buy_zone,
+        "buy_reasons": buy_reasons,
+        "sell_zone": sell_zone,
+        "sell_reasons": sell_reasons,
+        "action": action,
+        "action_reason": action_reason,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  UTILITY
+# ═══════════════════════════════════════════════════════════════════════
 
 def _analyze_last_candle(df: pd.DataFrame) -> dict:
-    """
-    Analyze the anatomy of the most recent candle.
-
-    Returns breakdown of body, upper wick, and lower wick
-    as percentages of the total candle range — useful for
-    understanding buying vs selling pressure.
-
-    Example:
-      body_pct=70%, upper_wick_pct=5%, lower_wick_pct=25%
-      → Strong bullish candle with buying pressure, mild selling at top.
-    """
+    """Analyze the anatomy of the most recent candle."""
     last = df.iloc[-1]
     rng = last["High"] - last["Low"]
 
@@ -490,22 +761,8 @@ def _analyze_last_candle(df: pd.DataFrame) -> dict:
     }
 
 
-def format_candles_for_llm(df: pd.DataFrame, n_candles: int = 30) -> str:
-    """
-    Format recent candle data as a compact string for the LLM prompt.
-
-    WHY THIS MATTERS:
-      LLMs can't "see" a chart, but they CAN read a well-formatted
-      table of numbers and reason about patterns from it.
-      This is how we bridge the gap between raw market data and LLM analysis.
-
-    Args:
-        df: OHLCV DataFrame
-        n_candles: Number of recent candles to include
-
-    Returns:
-        Multi-line string with date, OHLCV per row.
-    """
+def format_candles_for_llm(df: pd.DataFrame, n_candles: int = 20) -> str:
+    """Format recent candle data as a compact string for LLM prompt (reduced from 30 to 20)."""
     recent = df.tail(n_candles).copy()
     lines = ["Date        | Open    | High    | Low     | Close   | Volume"]
     lines.append("-" * 70)
