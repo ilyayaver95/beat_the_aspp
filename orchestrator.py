@@ -147,8 +147,9 @@ def _synthesize(
     Anthropic: uses adaptive thinking + effort:high for maximum quality.
     Ollama:    uses plain completion (no extended thinking support).
     """
-    from llm_client import AnthropicLLMClient
+    from llm_client import AnthropicLLMClient, GroqLLMClient
     is_anthropic = isinstance(client, AnthropicLLMClient)
+    # Groq and Ollama use the same path — Anthropic-specific params skipped
 
     set_context(ticker, "synthesis")
     system_prompt = _build_synthesis_system_prompt()
@@ -267,10 +268,15 @@ Think through where signals agree, where they conflict, and what matters most.""
 
 
 def _parse_streamed_report(text, ticker, tech, fund, sent, composite, client) -> FinalReport:
-    """Convert the streamed analyst narrative into a structured FinalReport."""
+    """
+    Convert the streamed analyst narrative into a structured FinalReport.
+
+    Uses claude-sonnet-4-6 (not Opus) — this is pure JSON extraction from
+    an already-written narrative. Sonnet handles it perfectly at ~5x lower cost.
+    """
     set_context(ticker, "synthesis_parse")
     response = client.messages.parse(
-        model="claude-opus-4-6",
+        model="claude-sonnet-4-6",
         max_tokens=4096,
         system="""Extract a structured FinalReport JSON from the analyst narrative below.
 Derive all fields from the text. Return ONLY valid JSON matching the FinalReport schema.""",
