@@ -1,0 +1,25 @@
+# Core LLM
+anthropic>=0.40.0
+groq>=0.11.0
+
+# Data
+yfinance>=0.2.40
+pandas>=2.0.0
+numpy>=1.26.0
+
+# Models & validation
+pydantic>=2.0.0
+
+# CLI & output
+rich>=13.0.0
+python-dotenv>=1.0.0
+
+# HTML report
+plotly>=5.20.0
+
+# HTTP / RSS (news scraper)
+requests>=2.31.0
+feedparser>=6.0.0
+
+# Optional: local Ollama Python client
+# ollama>=0.3.0

@@ -38,3 +38,6 @@ reports/*.html
 
 # ── Analysis cache (contains price data, not secrets) ─────────────
 data/analyses/
+
+
+/reports
