@@ -1,0 +1,43 @@
+# ============================================================
+# Beat the ASPP — Python Dependencies
+# ============================================================
+# Install with:  pip install -r requirements.txt
+#
+# Python 3.11+ recommended
+# ============================================================
+
+# --- LLM Providers ---
+anthropic>=0.40.0          # Anthropic Claude API (--llm api, paid)
+groq>=0.9.0                # Groq cloud API (--llm groq, FREE — sign up at console.groq.com)
+# Ollama (--llm ollama) is FREE and uses no extra packages.
+# Install Ollama separately: https://ollama.ai
+# Then: ollama pull llama3.2  →  python main.py --ticker AAPL --llm ollama
+
+# --- Market & Financial Data ---
+yfinance>=0.2.40           # Yahoo Finance: OHLCV candles, financials, news
+pandas>=2.1.0              # Core data manipulation
+numpy>=1.26.0              # Numerical operations
+
+# --- Technical Analysis ---
+ta>=0.11.0                 # Technical indicators (MAs, RSI, MACD — pure Python)
+
+# --- News & Web Scraping ---
+feedparser>=6.0.11         # Parse RSS feeds (Yahoo Finance, Reuters)
+requests>=2.32.0           # HTTP requests
+beautifulsoup4>=4.12.0     # HTML parsing for news scraping
+lxml>=5.2.0                # Fast HTML/XML parser (used by BeautifulSoup)
+
+# --- Data Validation & Models ---
+pydantic>=2.7.0            # Structured data models for agent outputs
+
+# --- Environment & Config ---
+python-dotenv>=1.0.0       # Load .env file for API keys
+
+# --- Charts & HTML Report ---
+plotly>=5.20.0             # Interactive candlestick chart embedded in HTML report
+
+# --- Optional: Rich output in terminal ---
+rich>=13.7.0               # Pretty terminal output (tables, panels, colors)
+
+# --- Web UI ---
+streamlit>=1.35.0          # Web app interface (run: streamlit run app.py)
