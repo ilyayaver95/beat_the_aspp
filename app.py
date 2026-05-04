@@ -41,6 +41,38 @@ try:
 except Exception as _e:
     _secrets_sync_status = f"st.secrets failed: {type(_e).__name__}: {_e}"
 
+# Snapshot any deployer-provided keys ONCE at startup. After this, env vars
+# are managed per-session from st.session_state via _apply_user_keys().
+_DEPLOYER_ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+_DEPLOYER_GROQ_KEY      = os.environ.get("GROQ_API_KEY", "")
+
+
+def _apply_user_keys() -> None:
+    """
+    Apply this session's API keys to os.environ.
+
+    Precedence: user-pasted key (st.session_state) > deployer key (snapshot above).
+    Called at the top of every script rerun so each user sees their own keys.
+    """
+    user_anth = st.session_state.get("user_anthropic_key", "").strip()
+    user_groq = st.session_state.get("user_groq_key", "").strip()
+
+    eff_anth = user_anth or _DEPLOYER_ANTHROPIC_KEY
+    eff_groq = user_groq or _DEPLOYER_GROQ_KEY
+
+    if eff_anth:
+        os.environ["ANTHROPIC_API_KEY"] = eff_anth
+    else:
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+
+    if eff_groq:
+        os.environ["GROQ_API_KEY"] = eff_groq
+    else:
+        os.environ.pop("GROQ_API_KEY", None)
+
+
+_apply_user_keys()
+
 # ── Page config ────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Beat the ASPP",
@@ -139,13 +171,51 @@ def _render_html_report(html_path: str, header_msg: str = "", header_type: str =
 
 # ── Sidebar — Favorites ────────────────────────────────────────────
 with st.sidebar:
-    # ── Diagnostic: show whether secrets are reaching the SDK ──────────
-    with st.expander("🔧 Environment diagnostic", expanded=False):
-        anth = os.environ.get("ANTHROPIC_API_KEY", "")
-        groq = os.environ.get("GROQ_API_KEY", "")
-        st.text(f"Secrets sync: {_secrets_sync_status}")
-        st.text(f"ANTHROPIC_API_KEY: {'✅ ' + anth[:8] + '…' + anth[-4:] if anth else '❌ NOT SET'}")
-        st.text(f"GROQ_API_KEY:      {'✅ ' + groq[:8] + '…' + groq[-4:] if groq else '❌ NOT SET'}")
+    # ── API Keys (Bring Your Own) ──────────────────────────────────────
+    _has_deployer_anth = bool(_DEPLOYER_ANTHROPIC_KEY)
+    _has_deployer_groq = bool(_DEPLOYER_GROQ_KEY)
+    _has_user_anth = bool(st.session_state.get("user_anthropic_key", "").strip())
+    _has_user_groq = bool(st.session_state.get("user_groq_key", "").strip())
+
+    with st.expander("🔑 API Keys", expanded=not (_has_deployer_anth or _has_user_anth)):
+        st.caption(
+            "Paste your own API keys to use the app at your own cost. "
+            "Keys live only in your browser session and are never saved."
+        )
+
+        # Anthropic
+        if _has_user_anth:
+            st.success("Anthropic: using **your** key — your account is being charged.")
+        elif _has_deployer_anth:
+            st.info("Anthropic: using deployer's key (free for you).")
+        else:
+            st.warning("Anthropic: no key set — Anthropic mode will fail.")
+
+        st.text_input(
+            "Anthropic API Key",
+            key="user_anthropic_key",
+            type="password",
+            placeholder="sk-ant-api03-...",
+            help="Get one at https://console.anthropic.com/settings/keys",
+            on_change=_apply_user_keys,
+        )
+
+        # Groq
+        if _has_user_groq:
+            st.success("Groq: using **your** key.")
+        elif _has_deployer_groq:
+            st.info("Groq: using deployer's key.")
+        else:
+            st.caption("Groq: no key set (free, optional — get one at console.groq.com).")
+
+        st.text_input(
+            "Groq API Key (optional, free)",
+            key="user_groq_key",
+            type="password",
+            placeholder="gsk_...",
+            help="Free key at https://console.groq.com/keys",
+            on_change=_apply_user_keys,
+        )
 
     st.markdown("## ⭐ Favorites")
     favorites = load_favorites()
@@ -660,6 +730,19 @@ if _tickers_to_scan:
 
 # ── Run analysis ───────────────────────────────────────────────────
 if run_clicked and ticker:
+    # Pre-flight: make sure the chosen provider has a key available.
+    _missing_key = (
+        (provider == "api"  and not os.environ.get("ANTHROPIC_API_KEY"))
+        or (provider == "groq" and not os.environ.get("GROQ_API_KEY"))
+    )
+    if _missing_key:
+        _name = "Anthropic" if provider == "api" else "Groq"
+        st.error(
+            f"No {_name} API key set. Open the **🔑 API Keys** panel in the "
+            f"sidebar and paste your key, or pick a different provider."
+        )
+        st.stop()
+
     # Clear any pinned cache so the new result is shown cleanly.
     st.session_state.pop("view_cache", None)
 

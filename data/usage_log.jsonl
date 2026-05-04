@@ -56,3 +56,7 @@
 {"ts": "2026-04-14T21:01:44.792405+00:00", "sid": "5ca0cbb1", "tkr": "SNDK", "op": "sentiment_agent", "mdl": "claude-sonnet-4-6", "in": 2745, "out": 517, "cw": 0, "cr": 0, "$": 0.01599}
 {"ts": "2026-04-14T21:01:59.887394+00:00", "sid": "5ca0cbb1", "tkr": "SNDK", "op": "fundamental_agent", "mdl": "claude-sonnet-4-6", "in": 2790, "out": 427, "cw": 0, "cr": 0, "$": 0.014775}
 {"ts": "2026-04-14T21:02:47.245768+00:00", "sid": "5ca0cbb1", "tkr": "SNDK", "op": "synthesis", "mdl": "claude-opus-4-6", "in": 3524, "out": 1965, "cw": 0, "cr": 0, "$": 0.200235}
+{"ts": "2026-05-04T11:42:00.846399+00:00", "sid": "47c53623", "tkr": "INTC", "op": "technical_agent", "mdl": "claude-sonnet-4-6", "in": 959, "out": 189, "cw": 0, "cr": 0, "$": 0.005712}
+{"ts": "2026-05-04T11:42:24.983375+00:00", "sid": "47c53623", "tkr": "INTC", "op": "sentiment_agent", "mdl": "claude-sonnet-4-6", "in": 2456, "out": 402, "cw": 0, "cr": 0, "$": 0.013398}
+{"ts": "2026-05-04T11:42:30.175712+00:00", "sid": "47c53623", "tkr": "INTC", "op": "fundamental_agent", "mdl": "claude-sonnet-4-6", "in": 2784, "out": 407, "cw": 0, "cr": 0, "$": 0.014457}
+{"ts": "2026-05-04T11:43:12.194726+00:00", "sid": "47c53623", "tkr": "INTC", "op": "synthesis", "mdl": "claude-opus-4-6", "in": 3451, "out": 1846, "cw": 0, "cr": 0, "$": 0.190215}
