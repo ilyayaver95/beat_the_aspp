@@ -22,11 +22,20 @@ import traceback
 from datetime import datetime
 
 from dotenv import load_dotenv
-load_dotenv()  # loads .env locally; on Streamlit Cloud, secrets are already in os.environ
+load_dotenv()  # loads .env locally
 
 import streamlit as st
 import streamlit.components.v1 as components
 from cost_tracker import tracker as _cost_tracker
+
+# Streamlit Cloud stores secrets in st.secrets, not os.environ.
+# Sync them so libraries like the Anthropic SDK can read them normally.
+try:
+    for _k, _v in st.secrets.items():
+        if isinstance(_v, str) and _k not in os.environ:
+            os.environ[_k] = _v
+except Exception:
+    pass
 
 # ── Page config ────────────────────────────────────────────────────
 st.set_page_config(
