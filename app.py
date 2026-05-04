@@ -22,7 +22,7 @@ import traceback
 from datetime import datetime
 
 from dotenv import load_dotenv
-load_dotenv(override=True)  # Always re-read .env so new/changed keys take effect without restart
+load_dotenv()  # loads .env locally; on Streamlit Cloud, secrets are already in os.environ
 
 import streamlit as st
 import streamlit.components.v1 as components
