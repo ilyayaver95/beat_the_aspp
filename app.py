@@ -30,12 +30,16 @@ from cost_tracker import tracker as _cost_tracker
 
 # Streamlit Cloud stores secrets in st.secrets, not os.environ.
 # Sync them so libraries like the Anthropic SDK can read them normally.
+_secrets_sync_status = "no st.secrets access"
+_secrets_sync_keys = []
 try:
     for _k, _v in st.secrets.items():
         if isinstance(_v, str) and _k not in os.environ:
             os.environ[_k] = _v
-except Exception:
-    pass
+            _secrets_sync_keys.append(_k)
+    _secrets_sync_status = f"synced {len(_secrets_sync_keys)} keys: {_secrets_sync_keys}"
+except Exception as _e:
+    _secrets_sync_status = f"st.secrets failed: {type(_e).__name__}: {_e}"
 
 # ── Page config ────────────────────────────────────────────────────
 st.set_page_config(
@@ -135,6 +139,14 @@ def _render_html_report(html_path: str, header_msg: str = "", header_type: str =
 
 # ── Sidebar — Favorites ────────────────────────────────────────────
 with st.sidebar:
+    # ── Diagnostic: show whether secrets are reaching the SDK ──────────
+    with st.expander("🔧 Environment diagnostic", expanded=False):
+        anth = os.environ.get("ANTHROPIC_API_KEY", "")
+        groq = os.environ.get("GROQ_API_KEY", "")
+        st.text(f"Secrets sync: {_secrets_sync_status}")
+        st.text(f"ANTHROPIC_API_KEY: {'✅ ' + anth[:8] + '…' + anth[-4:] if anth else '❌ NOT SET'}")
+        st.text(f"GROQ_API_KEY:      {'✅ ' + groq[:8] + '…' + groq[-4:] if groq else '❌ NOT SET'}")
+
     st.markdown("## ⭐ Favorites")
     favorites = load_favorites()
 
