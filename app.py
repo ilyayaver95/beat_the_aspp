@@ -396,7 +396,7 @@ def _cost_tracker_panel() -> None:
         st.caption(
             "Anthropic — Agents: claude-sonnet-4-6 · $3/M in · $15/M out  "
             "· Synthesis: claude-opus-4-6 · $15/M in · $75/M out  "
-            "· Groq (llama-3.3-70b) = $0.00  · Ollama = $0.00  "
+            "· Groq (llama-3.1-8b-instant) = $0.00  · Ollama = $0.00  "
             "· Prompt caching active on Anthropic (system prompts cached → 90% cheaper on repeat runs)"
         )
 
@@ -513,15 +513,16 @@ with col3:
         ollama_model = st.selectbox(
             "**Groq Model**",
             options=[
+                "llama-3.1-8b-instant",
                 "llama-3.3-70b-versatile",
                 "meta-llama/llama-4-maverick-17b-128e-instruct",
-                "llama-3.1-8b-instant",
                 "qwen/qwen3-32b",
             ],
             help=(
-                "llama-3.3-70b-versatile = best quality (recommended)  ·  "
-                "llama-4-maverick = latest Llama 4  ·  "
-                "llama-3.1-8b-instant = fastest, lowest quality"
+                "llama-3.1-8b-instant = fast & reliable on free tier (recommended)  ·  "
+                "llama-3.3-70b-versatile = better reasoning but hits 6K tok/min rate limit "
+                "with 3 parallel agents — runs may stall  ·  "
+                "llama-4-maverick = latest Llama 4"
             ),
         )
     else:
