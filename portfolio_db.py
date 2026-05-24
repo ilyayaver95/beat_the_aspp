@@ -7,6 +7,7 @@ SECURITY:
   - Every query uses ? parameterized placeholders — no SQL injection possible.
   - All user inputs are validated and sanitized before hitting the DB.
   - WAL journal mode: safe for concurrent reads from Streamlit reruns.
+  - Per-user isolation: each user gets their own DB file (path passed by caller).
 
 SCHEMA:
   trades — one row per BUY or SELL transaction. P&L is always computed
@@ -15,7 +16,8 @@ SCHEMA:
 
 USAGE:
   from portfolio_db import init_db, add_trade, get_all_trades, ...
-  init_db()  # call once at app startup
+  db = "data/portfolio_abc123.db"
+  init_db(db)
 """
 
 import sqlite3
@@ -45,10 +47,12 @@ CREATE INDEX IF NOT EXISTS idx_trades_date   ON trades(trade_date);
 # ── Internal connection helper ─────────────────────────────────────────────
 
 @contextmanager
-def _db():
+def _db(db_path: str = DB_PATH):
     """Yield a committed, auto-closed SQLite connection."""
-    os.makedirs("data", exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    db_dir = os.path.dirname(db_path)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -94,9 +98,9 @@ def _validate_trade(ticker: str, action: str, trade_date: str,
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
-def init_db() -> None:
+def init_db(db_path: str = DB_PATH) -> None:
     """Create tables and indexes if they don't exist. Safe to call on every startup."""
-    with _db() as conn:
+    with _db(db_path) as conn:
         conn.executescript(_DDL)
 
 
@@ -107,19 +111,12 @@ def add_trade(
     quantity: float,
     price_per_share: float,
     notes: str = "",
+    db_path: str = DB_PATH,
 ) -> int:
-    """
-    Insert a new trade record.
-
-    Returns:
-        The auto-assigned integer id of the new row.
-
-    Raises:
-        ValueError — on invalid inputs (caught by the UI layer)
-    """
+    """Insert a new trade record. Returns the auto-assigned integer id."""
     ticker, action = _validate_trade(ticker, action, trade_date, quantity, price_per_share)
-    notes = notes.strip()[:500]  # cap note length
-    with _db() as conn:
+    notes = notes.strip()[:500]
+    with _db(db_path) as conn:
         cur = conn.execute(
             """INSERT INTO trades
                (ticker, action, trade_date, quantity, price_per_share, notes, created_at)
@@ -140,11 +137,12 @@ def update_trade(
     quantity: float,
     price_per_share: float,
     notes: str = "",
+    db_path: str = DB_PATH,
 ) -> None:
     """Update an existing trade by its id."""
     ticker, action = _validate_trade(ticker, action, trade_date, quantity, price_per_share)
     notes = notes.strip()[:500]
-    with _db() as conn:
+    with _db(db_path) as conn:
         conn.execute(
             """UPDATE trades
                SET ticker=?, action=?, trade_date=?, quantity=?,
@@ -156,24 +154,24 @@ def update_trade(
         )
 
 
-def delete_trade(trade_id: int) -> None:
+def delete_trade(trade_id: int, db_path: str = DB_PATH) -> None:
     """Delete a trade by its id."""
-    with _db() as conn:
+    with _db(db_path) as conn:
         conn.execute("DELETE FROM trades WHERE id=?", (int(trade_id),))
 
 
-def get_all_trades() -> list[dict]:
+def get_all_trades(db_path: str = DB_PATH) -> list[dict]:
     """Return all trades, newest first."""
-    with _db() as conn:
+    with _db(db_path) as conn:
         rows = conn.execute(
             "SELECT * FROM trades ORDER BY trade_date DESC, id DESC"
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_trades_for_ticker(ticker: str) -> list[dict]:
+def get_trades_for_ticker(ticker: str, db_path: str = DB_PATH) -> list[dict]:
     """Return all trades for one ticker, oldest first (for cost basis calc)."""
-    with _db() as conn:
+    with _db(db_path) as conn:
         rows = conn.execute(
             "SELECT * FROM trades WHERE ticker=? ORDER BY trade_date ASC, id ASC",
             (ticker.strip().upper(),),
@@ -181,9 +179,9 @@ def get_trades_for_ticker(ticker: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_tickers() -> list[str]:
+def get_tickers(db_path: str = DB_PATH) -> list[str]:
     """Return the list of distinct tickers that have at least one trade."""
-    with _db() as conn:
+    with _db(db_path) as conn:
         rows = conn.execute(
             "SELECT DISTINCT ticker FROM trades ORDER BY ticker"
         ).fetchall()
@@ -196,15 +194,6 @@ def compute_position(trades: list[dict]) -> dict:
     """
     Compute the full P&L position for a list of trades for ONE ticker.
     Uses the average cost basis method.
-
-    Args:
-        trades: All trades for a single ticker, sorted by date ascending.
-
-    Returns dict with:
-        ticker, total_buy_qty, total_sell_qty, current_qty,
-        avg_cost_basis, total_invested, total_sell_proceeds,
-        realized_pnl, unrealized_pnl (0 — caller fills in with live price),
-        total_pnl (realized only here; caller adds unrealized)
     """
     buys  = [t for t in trades if t["action"] == "BUY"]
     sells = [t for t in trades if t["action"] == "SELL"]
@@ -217,7 +206,6 @@ def compute_position(trades: list[dict]) -> dict:
     current_qty = total_buy_qty - total_sell_qty
     avg_cost = total_buy_cost / total_buy_qty if total_buy_qty > 0 else 0.0
 
-    # Realized P&L = sell proceeds minus what those shares cost us on average
     realized_pnl = total_sell_proceeds - (total_sell_qty * avg_cost)
 
     ticker = trades[0]["ticker"] if trades else ""
@@ -231,7 +219,6 @@ def compute_position(trades: list[dict]) -> dict:
         "total_sell_proceeds":  round(total_sell_proceeds, 2),
         "cost_of_open_position": round(current_qty * avg_cost, 2),
         "realized_pnl":         round(realized_pnl, 2),
-        # caller fills these in after fetching live price:
         "current_price":        0.0,
         "current_value":        0.0,
         "unrealized_pnl":       0.0,
@@ -241,10 +228,7 @@ def compute_position(trades: list[dict]) -> dict:
 
 
 def enrich_with_price(pos: dict, current_price: float) -> dict:
-    """
-    Fill in the price-dependent fields of a position dict.
-    Call this after compute_position() once you have a live price.
-    """
+    """Fill in the price-dependent fields of a position dict."""
     cq    = pos["current_qty"]
     avg   = pos["avg_cost_basis"]
     unreal = round((current_price - avg) * cq, 2) if cq > 0 else 0.0

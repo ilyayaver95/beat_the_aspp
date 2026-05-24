@@ -38,3 +38,8 @@ reports/*.html
 
 # ── Analysis cache (contains price data, not secrets) ─────────────
 data/analyses/
+
+# ── Portfolio Baseline (private — never upload) ───────────────────
+data/portfolio_baseline.db
+data/portfolio_baseline.db-*
+data/portfolio_baseline.json

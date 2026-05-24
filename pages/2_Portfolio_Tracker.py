@@ -3,19 +3,12 @@ pages/2_Portfolio_Tracker.py
 ============================
 Portfolio Tracker — Streamlit multi-page app.
 
-FEATURES:
-  - Add BUY / SELL trades with date, qty, price, notes
-  - Inline editing and deletion of past trades via st.data_editor
-  - Live position dashboard: current price, P&L (unrealized + realized)
-  - Portfolio summary: total value, invested capital, overall gain/loss
-  - Auto-refreshes live prices every 30 seconds while the page is open
-  - All data stored in SQLite (data/portfolio.db) — no LLM calls
-
-DESIGN:
-  - Average Cost Basis method for P&L calculations
-  - All DB queries are parameterized (no SQL injection)
-  - yfinance prices cached 30s via st.cache_data to avoid rate-limiting
+Per-user isolation: each authenticated user gets a private SQLite database
+derived from their email address. On Streamlit Community Cloud, enable
+"Viewer authentication" in app settings — no extra OAuth setup needed.
 """
+
+import hashlib
 
 import yfinance as yf
 import pandas as pd
@@ -35,7 +28,36 @@ st.set_page_config(
     layout="wide",
 )
 
-init_db()
+
+# ── User identity ──────────────────────────────────────────────────────────
+
+def _get_user_email() -> str | None:
+    """Return the logged-in user's email, or None when running locally."""
+    try:
+        return st.user.email or None
+    except Exception:
+        return None
+
+
+def _portfolio_db_path() -> str:
+    email = _get_user_email()
+    if email:
+        safe = hashlib.sha256(email.lower().encode()).hexdigest()[:20]
+        return f"data/portfolio_{safe}.db"
+    return "data/portfolio_local.db"
+
+
+# ── Sidebar: user info ─────────────────────────────────────────────────────
+
+_email = _get_user_email()
+if _email:
+    st.sidebar.markdown(f"**Signed in as**  \n{_email}")
+else:
+    st.sidebar.caption("Running locally — data saved to portfolio_local.db")
+
+_DB = _portfolio_db_path()
+init_db(_DB)
+
 
 # ── Price helpers ──────────────────────────────────────────────────────────
 
@@ -82,13 +104,8 @@ def _fmt_pct(value: float) -> str:
 
 # ── Build full portfolio snapshot ──────────────────────────────────────────
 
-def _build_portfolio() -> tuple[list[dict], dict]:
-    """
-    Returns (positions, summary).
-    positions — list of enriched position dicts (one per ticker with open shares)
-    summary   — aggregated totals across all positions
-    """
-    tickers = get_tickers()
+def _build_portfolio(db_path: str) -> tuple[list[dict], dict]:
+    tickers = get_tickers(db_path=db_path)
     if not tickers:
         return [], {}
 
@@ -101,7 +118,7 @@ def _build_portfolio() -> tuple[list[dict], dict]:
     total_real   = 0.0
 
     for tkr in tickers:
-        trades = get_trades_for_ticker(tkr)
+        trades = get_trades_for_ticker(tkr, db_path=db_path)
         if not trades:
             continue
         pos = compute_position(trades)
@@ -134,14 +151,9 @@ def _build_portfolio() -> tuple[list[dict], dict]:
 # ══════════════════════════════════════════════════════════════════
 
 @st.fragment(run_every=30)
-def _dashboard() -> None:
-    """
-    Live portfolio dashboard. Re-executes every 30 seconds to show
-    updated prices without reloading the whole page.
-    """
-    positions, summary = _build_portfolio()
+def _dashboard(db_path: str) -> None:
+    positions, summary = _build_portfolio(db_path)
 
-    # ── Summary banner ─────────────────────────────────────────────
     if not positions:
         st.info("No trades recorded yet. Add your first trade below.")
         return
@@ -160,7 +172,6 @@ def _dashboard() -> None:
 
     st.divider()
 
-    # ── Per-position cards ─────────────────────────────────────────
     open_pos  = [p for p in positions if p["current_qty"] > 0]
     closed_pos = [p for p in positions if p["current_qty"] == 0]
 
@@ -189,7 +200,6 @@ def _dashboard() -> None:
                 unsafe_allow_html=True,
             )
 
-    # ── Detail table ───────────────────────────────────────────────
     st.markdown("#### Position Details")
     rows = []
     for pos in positions:
@@ -245,11 +255,10 @@ st.title("💼 Portfolio Tracker")
 st.caption("Track your stock trades · Real-time P&L · No AI tokens used")
 st.divider()
 
-_dashboard()
+_dashboard(_DB)
 
 st.divider()
 
-# ── Bottom section: Add Trade | Transaction History ────────────────
 col_form, col_history = st.columns([1, 2], gap="large")
 
 # ── ADD TRADE form ─────────────────────────────────────────────────
@@ -295,8 +304,8 @@ with col_form:
                     quantity=qty_in,
                     price_per_share=price_in,
                     notes=notes_in,
+                    db_path=_DB,
                 )
-                # Invalidate price cache so new ticker appears immediately
                 _fetch_prices.clear()
                 st.success(
                     f"{'BUY' if action_in == 'BUY' else 'SELL'} recorded: "
@@ -311,15 +320,13 @@ with col_form:
 with col_history:
     st.markdown("### 📋 Transaction History")
 
-    all_trades = get_all_trades()
+    all_trades = get_all_trades(db_path=_DB)
 
     if not all_trades:
         st.info("No trades yet.")
     else:
-        # Build display DataFrame — keep id for syncing, hide it from user
         df_trades = pd.DataFrame(all_trades)
 
-        # Rename for display
         display_cols = {
             "id":              "ID",
             "ticker":          "Ticker",
@@ -334,7 +341,6 @@ with col_history:
             .rename(columns=display_cols)
         )
 
-        # Action color styling
         def _style_action(val):
             if val == "BUY":
                 return "color: #2ecc71; font-weight:600"
@@ -371,15 +377,12 @@ with col_history:
             if st.button("💾 Save Changes", type="primary", use_container_width=True):
                 errors = []
 
-                # ── Apply edits ───────────────────────────────────
                 for row_idx, changes in editor_state.get("edited_rows", {}).items():
                     row_idx = int(row_idx)
                     if row_idx >= len(df_display):
                         continue
                     orig = df_display.iloc[row_idx]
                     trade_id = int(orig["ID"])
-
-                    # Merge original values with edited ones
                     merged = {
                         "ticker":          changes.get("Ticker",    orig["Ticker"]),
                         "action":          changes.get("Action",    orig["Action"]),
@@ -389,18 +392,17 @@ with col_history:
                         "notes":           changes.get("Notes",     orig["Notes"] or ""),
                     }
                     try:
-                        update_trade(trade_id, **merged)
+                        update_trade(trade_id, db_path=_DB, **merged)
                     except ValueError as e:
                         errors.append(f"Row {row_idx+1}: {e}")
 
-                # ── Apply deletions ───────────────────────────────
                 for row_idx in editor_state.get("deleted_rows", []):
                     row_idx = int(row_idx)
                     if row_idx >= len(df_display):
                         continue
                     trade_id = int(df_display.iloc[row_idx]["ID"])
                     try:
-                        delete_trade(trade_id)
+                        delete_trade(trade_id, db_path=_DB)
                     except Exception as e:
                         errors.append(f"Delete row {row_idx+1}: {e}")
 

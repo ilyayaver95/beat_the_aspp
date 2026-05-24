@@ -40,4 +40,4 @@ plotly>=5.20.0             # Interactive candlestick chart embedded in HTML repo
 rich>=13.7.0               # Pretty terminal output (tables, panels, colors)
 
 # --- Web UI ---
-streamlit>=1.35.0          # Web app interface (run: streamlit run app.py)
+streamlit>=1.40.0          # Web app interface (run: streamlit run app.py)
