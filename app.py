@@ -177,19 +177,33 @@ with st.sidebar:
     _has_user_anth = bool(st.session_state.get("user_anthropic_key", "").strip())
     _has_user_groq = bool(st.session_state.get("user_groq_key", "").strip())
 
-    with st.expander("🔑 API Keys", expanded=not (_has_deployer_anth or _has_user_anth)):
-        st.caption(
-            "Paste your own API keys to use the app at your own cost. "
-            "Keys live only in your browser session and are never saved."
-        )
+    _keys_needed = not (_has_deployer_groq or _has_user_groq or _has_deployer_anth or _has_user_anth)
+    with st.expander("🔑 API Keys", expanded=_keys_needed):
+        # Groq is built in — show status, allow override
+        if _has_user_groq:
+            st.success("Groq: using **your** key.")
+        elif _has_deployer_groq:
+            st.success("Groq: **ready to use** (no key needed).")
+        else:
+            st.warning("Groq: no key configured.")
+            st.text_input(
+                "Groq API Key (free)",
+                key="user_groq_key",
+                type="password",
+                placeholder="gsk_...",
+                help="Free key at https://console.groq.com/keys",
+                on_change=_apply_user_keys,
+            )
 
-        # Anthropic
+        st.divider()
+        st.caption("**Optional — Anthropic (higher quality, paid):**")
+
         if _has_user_anth:
             st.success("Anthropic: using **your** key — your account is being charged.")
         elif _has_deployer_anth:
             st.info("Anthropic: using deployer's key (free for you).")
         else:
-            st.warning("Anthropic: no key set — Anthropic mode will fail.")
+            st.caption("Anthropic: no key set — Anthropic mode will fail.")
 
         st.text_input(
             "Anthropic API Key",
@@ -197,23 +211,6 @@ with st.sidebar:
             type="password",
             placeholder="sk-ant-api03-...",
             help="Get one at https://console.anthropic.com/settings/keys",
-            on_change=_apply_user_keys,
-        )
-
-        # Groq
-        if _has_user_groq:
-            st.success("Groq: using **your** key.")
-        elif _has_deployer_groq:
-            st.info("Groq: using deployer's key.")
-        else:
-            st.caption("Groq: no key set (free, optional — get one at console.groq.com).")
-
-        st.text_input(
-            "Groq API Key (optional, free)",
-            key="user_groq_key",
-            type="password",
-            placeholder="gsk_...",
-            help="Free key at https://console.groq.com/keys",
             on_change=_apply_user_keys,
         )
 
@@ -423,18 +420,18 @@ with col1:
 with col2:
     provider_choice = st.radio(
         "**LLM Provider**",
-        ["🔵 Anthropic API (paid)", "🟡 Groq API (free)", "🟢 Local Ollama (free)"],
+        ["🟡 Groq API (free)", "🔵 Anthropic API (paid)", "🟢 Local Ollama (free)"],
         horizontal=True,
         help=(
-            "Anthropic: highest quality, requires ANTHROPIC_API_KEY in .env  |  "
-            "Groq: FREE cloud API, near GPT-4 quality, requires GROQ_API_KEY in .env  |  "
+            "Groq: FREE, built-in, no key needed  |  "
+            "Anthropic: highest quality, requires your own API key  |  "
             "Ollama: free local, requires Ollama installed and running"
         ),
     )
-    if provider_choice.startswith("🔵"):
-        provider = "api"
-    elif provider_choice.startswith("🟡"):
+    if provider_choice.startswith("🟡"):
         provider = "groq"
+    elif provider_choice.startswith("🔵"):
+        provider = "api"
     else:
         provider = "ollama"
 
