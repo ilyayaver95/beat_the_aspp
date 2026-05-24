@@ -49,6 +49,17 @@ _PRICING: dict[str, dict[str, float]] = {
 # Fallback — assume Opus pricing for unknown models (conservative / safe)
 _DEFAULT_RATES = _PRICING["claude-opus-4-6"]
 
+# One ticker analysis = 3 agents + synthesis + JSON parse = 5 LLM calls.
+CALLS_PER_ANALYSIS = 5
+
+# Rough baseline used only when no historical data exists yet.
+_DEFAULT_AVG_PER_ANALYSIS = {
+    "input":       6000,
+    "output":      3000,
+    "cache_write": 1000,
+    "cache_read":  2000,
+}
+
 USAGE_LOG_FILE = "data/usage_log.jsonl"
 
 # ── Thread-local context ───────────────────────────────────────────────────
@@ -89,6 +100,50 @@ def compute_cost(
         + cache_read_tokens     * rates["cache_read"]  / 1_000_000,
         6,
     )
+
+
+def list_priced_models() -> list[str]:
+    """Return the models for which we know pricing — used by the predictor UI."""
+    return list(_PRICING.keys())
+
+
+def predict_analysis_cost(
+    model: str,
+    avg_input: int,
+    avg_output: int,
+    avg_cache_write: int = 0,
+    avg_cache_read: int = 0,
+) -> float:
+    """
+    Predict the USD cost of one full ticker analysis if every call used `model`.
+    Token averages should already be aggregated across all 5 calls in the run.
+    """
+    return compute_cost(
+        model, avg_input, avg_output, avg_cache_write, avg_cache_read
+    )
+
+
+def _avg_per_analysis(records: list[dict]) -> dict:
+    """
+    Estimate per-analysis token averages from past records.
+    Counts distinct synthesis calls as the number of analyses (one per run).
+    Falls back to len(records) / CALLS_PER_ANALYSIS if no synthesis tag found.
+    """
+    if not records:
+        return {**_DEFAULT_AVG_PER_ANALYSIS, "cost": 0.0, "analyses": 0}
+
+    num_analyses = sum(1 for r in records if r.get("op") == "synthesis")
+    if num_analyses == 0:
+        num_analyses = max(1, len(records) // CALLS_PER_ANALYSIS)
+
+    return {
+        "input":       sum(r.get("in", 0) for r in records) // num_analyses,
+        "output":      sum(r.get("out", 0) for r in records) // num_analyses,
+        "cache_write": sum(r.get("cw", 0) for r in records) // num_analyses,
+        "cache_read":  sum(r.get("cr", 0) for r in records) // num_analyses,
+        "cost":        round(sum(r.get("$", 0.0) for r in records) / num_analyses, 4),
+        "analyses":    num_analyses,
+    }
 
 
 # ── UsageTracker ───────────────────────────────────────────────────────────
@@ -179,6 +234,18 @@ class UsageTracker:
     def get_total_stats(self) -> dict:
         """Return aggregated stats for all time (reads JSONL file)."""
         return self._aggregate(self._load())
+
+    def get_per_analysis_estimate(self) -> dict:
+        """
+        Average token usage and cost per single ticker analysis.
+        Prefers the last 24h of data, then falls back to all-time, then defaults.
+        """
+        h24 = self._load(
+            since_ts=datetime.now(timezone.utc) - timedelta(hours=24)
+        )
+        if sum(1 for r in h24 if r.get("op") == "synthesis") >= 1:
+            return _avg_per_analysis(h24)
+        return _avg_per_analysis(self._load())
 
     # ── Private helpers ────────────────────────────────────────────────
 

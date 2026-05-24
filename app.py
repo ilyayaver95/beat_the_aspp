@@ -26,7 +26,7 @@ load_dotenv()  # loads .env locally
 
 import streamlit as st
 import streamlit.components.v1 as components
-from cost_tracker import tracker as _cost_tracker
+from cost_tracker import tracker as _cost_tracker, predict_analysis_cost
 
 # Streamlit Cloud stores secrets in st.secrets, not os.environ.
 # Sync them so libraries like the Anthropic SDK can read them normally.
@@ -399,6 +399,63 @@ def _cost_tracker_panel() -> None:
             "· Groq (llama-3.3-70b) = $0.00  · Ollama = $0.00  "
             "· Prompt caching active on Anthropic (system prompts cached → 90% cheaper on repeat runs)"
         )
+
+        # ── Predicted cost per ticker analysis (by model) ────────────
+        st.divider()
+        st.markdown("##### 🔮 Estimated Cost per Ticker Analysis")
+
+        est = _cost_tracker.get_per_analysis_estimate()
+        avg_in = est["input"]
+        avg_out = est["output"]
+        avg_cw = est["cache_write"]
+        avg_cr = est["cache_read"]
+
+        cost_opus   = predict_analysis_cost(
+            "claude-opus-4-6", avg_in, avg_out, avg_cw, avg_cr
+        )
+        cost_sonnet = predict_analysis_cost(
+            "claude-sonnet-4-6", avg_in, avg_out, avg_cw, avg_cr
+        )
+        cost_haiku  = predict_analysis_cost(
+            "claude-haiku-4-5-20251001", avg_in, avg_out, avg_cw, avg_cr
+        )
+
+        p1, p2, p3, p4, p5 = st.columns(5)
+        p1.metric(
+            "Current mix",
+            f"${est['cost']:.4f}" if est["analyses"] > 0 else "—",
+            help="Historical avg (3 Sonnet agents + 1 Opus synthesis + 1 Sonnet parse)",
+        )
+        p2.metric(
+            "All Opus 4.6", f"${cost_opus:.4f}",
+            help="$15 in / $75 out per 1M tokens",
+        )
+        p3.metric(
+            "All Sonnet 4.6", f"${cost_sonnet:.4f}",
+            help="$3 in / $15 out per 1M tokens",
+        )
+        p4.metric(
+            "All Haiku 4.5", f"${cost_haiku:.4f}",
+            help="$0.80 in / $4 out per 1M tokens",
+        )
+        p5.metric(
+            "Groq / Ollama", "$0.0000",
+            help="Free — no per-token charge",
+        )
+
+        _avg_total = avg_in + avg_out + avg_cw + avg_cr
+        if est["analyses"] > 0:
+            st.caption(
+                f"Based on **{est['analyses']}** past Anthropic analyses "
+                f"(~{_avg_total:,} tokens/run). Estimates assume each model would "
+                "use the same prompt sizes — actual output length may vary."
+            )
+        else:
+            st.caption(
+                f"Showing default estimates — no past Anthropic runs found "
+                f"(assumes ~{_avg_total:,} tokens/analysis). "
+                "Run one Anthropic analysis to calibrate to your prompts."
+            )
 
 
 _cost_tracker_panel()
