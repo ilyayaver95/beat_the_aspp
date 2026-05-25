@@ -213,25 +213,33 @@ with st.sidebar:
 
     _keys_needed = not (_has_deployer_groq or _has_user_groq or _has_deployer_anth or _has_user_anth)
     with st.expander("🔑 API Keys", expanded=_keys_needed):
-        # Groq is built in — show status, allow override
+        st.caption(
+            "Paste your own keys to use your own account (and avoid sharing "
+            "the deployer's free-tier quota). Keys live only in your browser "
+            "session and are never saved."
+        )
+
+        # ── Groq (free) ────────────────────────────────────────────
         if _has_user_groq:
-            st.success("Groq: using **your** key.")
+            st.success("Groq: using **your** key — drawing from your free-tier quota.")
         elif _has_deployer_groq:
-            st.success("Groq: **ready to use** (no key needed).")
+            st.info("Groq: using deployer's key (free for you, shared quota).")
         else:
-            st.warning("Groq: no key configured.")
-            st.text_input(
-                "Groq API Key (free)",
-                key="user_groq_key",
-                type="password",
-                placeholder="gsk_...",
-                help="Free key at https://console.groq.com/keys",
-                on_change=_apply_user_keys,
-            )
+            st.warning("Groq: no key configured — Groq mode will fail.")
+
+        st.text_input(
+            "Groq API Key (free)",
+            key="user_groq_key",
+            type="password",
+            placeholder="gsk_...",
+            help="Free key at https://console.groq.com/keys — overrides the deployer's key",
+            on_change=_apply_user_keys,
+        )
 
         st.divider()
-        st.caption("**Optional — Anthropic (higher quality, paid):**")
+        st.caption("**Anthropic (higher quality, paid):**")
 
+        # ── Anthropic (paid) ───────────────────────────────────────
         if _has_user_anth:
             st.success("Anthropic: using **your** key — your account is being charged.")
         elif _has_deployer_anth:
