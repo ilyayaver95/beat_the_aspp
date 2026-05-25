@@ -37,33 +37,43 @@ def run_analysis(
     stream_output: bool = True,
     llm_provider: str = "api",
     llm_model: str = None,
+    parallel_agents: bool | None = None,
 ) -> FinalReport:
     """
     Main orchestration function. Runs all 3 agents in parallel,
     synthesizes results, and generates an HTML report.
 
     Args:
-        ticker:        Stock ticker to analyze (e.g., "DRS")
-        period:        Historical price period for technical analysis
-        stream_output: If True, streams the synthesis to stdout in real-time
-        llm_provider:  "api" (Anthropic Claude) or "ollama" (local Ollama)
-        llm_model:     Override model name for Ollama (e.g., "llama3.1:8b")
+        ticker:          Stock ticker to analyze (e.g., "DRS")
+        period:          Historical price period for technical analysis
+        stream_output:   If True, streams the synthesis to stdout in real-time
+        llm_provider:    "api" (Anthropic Claude), "groq", or "ollama"
+        llm_model:       Override model name for Ollama / Groq
+        parallel_agents: Run the 3 agents concurrently. Default: True for
+                         Anthropic/Ollama, False for Groq (free-tier rate
+                         limit is 6K out-tokens/min — 3 parallel agents
+                         blow past it and all return fallback data).
 
     Returns:
         FinalReport — the complete analyst verdict
     """
     client = create_llm_client(llm_provider, llm_model)
 
+    # Groq free tier can't handle 3 parallel agents — go sequential by default.
+    if parallel_agents is None:
+        parallel_agents = (llm_provider != "groq")
+    max_workers = 3 if parallel_agents else 1
+
     print(f"\n{'='*60}")
     print(f"  ANALYZING: {ticker.upper()}")
     print(f"{'='*60}")
-    print(f"  Running 3 agents in parallel...\n")
+    print(f"  Running 3 agents {'in parallel' if parallel_agents else 'sequentially'}...\n")
 
-    # ── STEP 1: Run all 3 agents in parallel ──────────────────────────
+    # ── STEP 1: Run the 3 agents (parallel or sequential per provider) ─
     tech_report = fund_report = sent_report = None
     market_data = news_articles = None
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(run_technical_agent, ticker, period, client): "technical",
             executor.submit(run_fundamental_agent, ticker, client): "fundamental",
@@ -85,15 +95,24 @@ def run_analysis(
                 print(f"  [FAIL] {agent_name.capitalize()} agent failed: {e}")
                 import traceback; traceback.print_exc()
 
-    # Fallbacks for failed agents
+    # Fallbacks for failed agents — track which ones so the UI can warn.
+    failed_agents = []
     if not tech_report:
         tech_report = _fallback_technical(ticker)
+        failed_agents.append("technical")
     if not fund_report:
         fund_report = _fallback_fundamental(ticker)
+        failed_agents.append("fundamental")
     if not sent_report:
         sent_report = _fallback_sentiment(ticker)
+        failed_agents.append("sentiment")
     if news_articles is None:
         news_articles = []
+
+    if failed_agents:
+        print(f"\n  [WARN] {len(failed_agents)} agent(s) returned fallback data "
+              f"(score=5.0): {', '.join(failed_agents)}. "
+              f"Verdict will be unreliable.")
 
     # ── STEP 2: Synthesize into final report ──────────────────────────
     print(f"\n{'-'*60}")

@@ -400,6 +400,10 @@ class _GroqMessages:
     GROQ_MAX_OUTPUT_TOKENS = 2048   # hard cap for Groq free tier
     GROQ_MAX_RETRIES = 3
     GROQ_RETRY_WAIT = 20            # seconds between rate-limit retries
+    # Stock analysis needs structured, consistent numeric output (scores, verdicts).
+    # Groq defaults to temperature=1.0 which produces wildly different values per run.
+    GROQ_TEMPERATURE = 0.1
+    GROQ_SEED = 42                  # reproducibility — same input gives same output
 
     def __init__(self, client, model: str):
         self._client = client
@@ -440,6 +444,8 @@ class _GroqMessages:
             model=self.model,
             messages=msgs,
             max_tokens=effective_tokens,
+            temperature=self.GROQ_TEMPERATURE,
+            seed=self.GROQ_SEED,
         )
         if use_json_mode:
             kwargs["response_format"] = {"type": "json_object"}
@@ -582,6 +588,8 @@ class _GroqStream:
                 model=self.model,
                 messages=msgs,
                 max_tokens=self.max_tokens,
+                temperature=_GroqMessages.GROQ_TEMPERATURE,
+                seed=_GroqMessages.GROQ_SEED,
                 stream=True,
             )
             for chunk in stream:
