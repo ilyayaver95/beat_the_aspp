@@ -24,6 +24,38 @@ from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()  # loads .env locally
 
+# ── SSL fix for corporate networks with MITM inspection ───────────────
+# truststore makes Python's ssl module use the OS trust store (Windows
+# cert store, macOS Keychain, Linux ca-certificates). On Streamlit Cloud
+# this is a no-op since the OS store already contains public CAs.
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+    os.environ.setdefault("CURL_CA_BUNDLE", certifi.where())
+except ImportError:
+    pass
+
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
+# Local-only escape hatch for yfinance (curl_cffi bypasses Python ssl).
+# Set DISABLE_CURL_SSL_VERIFY=1 in your local .env when behind a corporate
+# firewall. Never set this in production.
+if os.environ.get("DISABLE_CURL_SSL_VERIFY") == "1":
+    try:
+        from curl_cffi import requests as _curl_requests
+        _orig_request = _curl_requests.Session.request
+        def _no_verify_request(self, *args, **kwargs):
+            kwargs.setdefault("verify", False)
+            return _orig_request(self, *args, **kwargs)
+        _curl_requests.Session.request = _no_verify_request
+    except ImportError:
+        pass
+
 import streamlit as st
 import streamlit.components.v1 as components
 from cost_tracker import tracker as _cost_tracker, predict_analysis_cost
@@ -112,7 +144,8 @@ def get_saved_reports(ticker: str) -> list[tuple[str, str]]:
     return sorted(results, reverse=True)  # newest first
 
 
-def run_analysis_cached(ticker: str, provider: str, model: str, period: str = "1y") -> tuple:
+def run_analysis_cached(ticker: str, provider: str, model: str,
+                        period: str = "1y", progress_callback=None) -> tuple:
     """Run the full analysis and return (FinalReport, html_path)."""
     from orchestrator import run_analysis
     report = run_analysis(
@@ -121,6 +154,7 @@ def run_analysis_cached(ticker: str, provider: str, model: str, period: str = "1
         stream_output=False,
         llm_provider=provider,
         llm_model=model if provider in ("ollama", "groq") else None,
+        progress_callback=progress_callback,
     )
     date_str = datetime.now().strftime("%Y-%m-%d")
     pattern = f"reports/{ticker}_{date_str}.html"
@@ -802,10 +836,33 @@ if run_clicked and ticker:
     st.session_state.pop("view_cache", None)
 
     with st.status(f"Analyzing **{ticker}**...", expanded=True) as status:
-        st.write("🔄 Running 3 agents in parallel (technical · fundamental · sentiment)...")
+        st.write("🔄 Running 3 agents (technical · fundamental · sentiment)...")
+
+        # Live progress callback — surfaces rate-limit waits, auth errors,
+        # connection issues, and agent failures inside the status box as they
+        # happen, instead of silently waiting.
+        def _progress_cb(level: str, message: str) -> None:
+            if level == "rate_limit":
+                st.warning(f"⏳ **Out of tokens** — {message}")
+            elif level == "auth":
+                st.error(f"🔑 **Auth issue** — {message}")
+            elif level == "connection":
+                st.error(f"🌐 **Connection issue** — {message}")
+            elif level == "error":
+                st.error(f"❌ {message}")
+            elif level == "warn":
+                st.warning(f"⚠️ {message}")
+            elif level == "ok":
+                st.write(f"✅ {message}")
+            else:
+                st.write(message)
+
         _pre_stats = _cost_tracker.get_session_stats()
         try:
-            report, html_path = run_analysis_cached(ticker, provider, ollama_model)
+            report, html_path = run_analysis_cached(
+                ticker, provider, ollama_model,
+                progress_callback=_progress_cb,
+            )
             # Capture per-run cost delta (only for paid Anthropic calls)
             _post_stats = _cost_tracker.get_session_stats()
             _run_cost = round(_post_stats["cost"] - _pre_stats["cost"], 4)

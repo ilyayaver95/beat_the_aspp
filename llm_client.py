@@ -40,7 +40,30 @@ INSTALL OLLAMA (if using --llm ollama):
 import json
 import os
 import requests
+import threading
 from typing import Type
+
+# ── Live progress callback (thread-local) ──────────────────────────────────
+# The Streamlit app sets a callback so retry/error events surface in the UI
+# immediately instead of being buried in stdout. Worker threads inherit it
+# via ThreadPoolExecutor(initializer=...) — see orchestrator.run_analysis.
+_progress_local = threading.local()
+
+
+def set_progress_callback(cb) -> None:
+    """Register a callback(level: str, message: str) for this thread."""
+    _progress_local.cb = cb
+
+
+def _emit_progress(level: str, message: str) -> None:
+    """Fire the registered callback if any; always print to stdout too."""
+    cb = getattr(_progress_local, "cb", None)
+    if cb is not None:
+        try:
+            cb(level, message)
+        except Exception:
+            pass
+    print(f"  [{level}] {message}")
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────
@@ -460,11 +483,20 @@ class _GroqMessages:
                 is_rate_limit = "RateLimitError" in name or "429" in str(exc)
                 if is_rate_limit and attempt < self.GROQ_MAX_RETRIES - 1:
                     wait = self.GROQ_RETRY_WAIT * (attempt + 1)
-                    print(f"  [Groq] Rate limit — retrying in {wait}s "
-                          f"(attempt {attempt + 1}/{self.GROQ_MAX_RETRIES})...")
+                    _emit_progress(
+                        "rate_limit",
+                        f"Groq rate limit — waiting {wait}s before retry "
+                        f"({attempt + 1}/{self.GROQ_MAX_RETRIES})",
+                    )
                     time.sleep(wait)
                     continue
-                raise self._wrap_groq_error(exc) from exc
+                # Out of retries or non-rate-limit error
+                wrapped = self._wrap_groq_error(exc)
+                _emit_progress(
+                    "rate_limit" if is_rate_limit else "error",
+                    f"Groq call failed: {wrapped}",
+                )
+                raise wrapped from exc
         raise self._wrap_groq_error(last_exc) from last_exc
 
     def parse(self, model=None, max_tokens=4096, system=None,

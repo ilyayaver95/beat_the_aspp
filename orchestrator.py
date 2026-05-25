@@ -27,8 +27,21 @@ from models.report import TechnicalReport, FundamentalReport, SentimentReport, F
 from agents.technical_agent import run_technical_agent
 from agents.fundamental_agent import run_fundamental_agent
 from agents.sentiment_agent import run_sentiment_agent
-from llm_client import create_llm_client
+from llm_client import create_llm_client, set_progress_callback
 from cost_tracker import set_context
+
+
+def _classify_error(exc: Exception) -> str:
+    """Categorize an agent failure so the UI can show a clear icon/message."""
+    msg = str(exc).lower()
+    name = type(exc).__name__
+    if "rate limit" in msg or "tokens/min" in msg or "ratelimit" in name.lower() or "429" in msg:
+        return "rate_limit"
+    if "401" in msg or "auth" in msg or "api key" in msg or "unauthorized" in msg:
+        return "auth"
+    if "connection" in msg or "timeout" in msg or "ssl" in msg or "network" in msg:
+        return "connection"
+    return "error"
 
 
 def run_analysis(
@@ -38,6 +51,7 @@ def run_analysis(
     llm_provider: str = "api",
     llm_model: str = None,
     parallel_agents: bool | None = None,
+    progress_callback=None,
 ) -> FinalReport:
     """
     Main orchestration function. Runs all 3 agents in parallel,
@@ -59,6 +73,17 @@ def run_analysis(
     """
     client = create_llm_client(llm_provider, llm_model)
 
+    # Register progress callback for this thread so llm_client retries surface live.
+    if progress_callback is not None:
+        set_progress_callback(progress_callback)
+
+    def _emit(level: str, message: str) -> None:
+        if progress_callback is not None:
+            try:
+                progress_callback(level, message)
+            except Exception:
+                pass
+
     # Groq free tier can't handle 3 parallel agents — go sequential by default.
     if parallel_agents is None:
         parallel_agents = (llm_provider != "groq")
@@ -67,13 +92,21 @@ def run_analysis(
     print(f"\n{'='*60}")
     print(f"  ANALYZING: {ticker.upper()}")
     print(f"{'='*60}")
-    print(f"  Running 3 agents {'in parallel' if parallel_agents else 'sequentially'}...\n")
+    mode = "in parallel" if parallel_agents else "sequentially (Groq rate-limit safe)"
+    print(f"  Running 3 agents {mode}...\n")
+    _emit("info", f"Running 3 agents {mode}")
 
     # ── STEP 1: Run the 3 agents (parallel or sequential per provider) ─
     tech_report = fund_report = sent_report = None
     market_data = news_articles = None
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    # Worker threads need the same progress callback so llm_client retries
+    # inside agent calls can also emit live events to the UI.
+    def _worker_init():
+        if progress_callback is not None:
+            set_progress_callback(progress_callback)
+
+    with ThreadPoolExecutor(max_workers=max_workers, initializer=_worker_init) as executor:
         futures = {
             executor.submit(run_technical_agent, ticker, period, client): "technical",
             executor.submit(run_fundamental_agent, ticker, client): "fundamental",
@@ -91,9 +124,12 @@ def run_analysis(
                 elif agent_name == "sentiment":
                     sent_report, news_articles = result  # (SentimentReport, articles)
                 print(f"  [OK] {agent_name.capitalize()} agent complete")
+                _emit("ok", f"{agent_name.capitalize()} agent complete")
             except Exception as e:
                 print(f"  [FAIL] {agent_name.capitalize()} agent failed: {e}")
                 import traceback; traceback.print_exc()
+                _emit(_classify_error(e),
+                      f"{agent_name.capitalize()} agent failed: {e}")
 
     # Fallbacks for failed agents — track which ones so the UI can warn.
     failed_agents = []
@@ -110,9 +146,11 @@ def run_analysis(
         news_articles = []
 
     if failed_agents:
-        print(f"\n  [WARN] {len(failed_agents)} agent(s) returned fallback data "
-              f"(score=5.0): {', '.join(failed_agents)}. "
-              f"Verdict will be unreliable.")
+        warn_msg = (f"{len(failed_agents)} agent(s) returned fallback data "
+                    f"(score=5.0): {', '.join(failed_agents)}. "
+                    f"Verdict will be unreliable.")
+        print(f"\n  [WARN] {warn_msg}")
+        _emit("warn", warn_msg)
 
     # ── STEP 2: Synthesize into final report ──────────────────────────
     print(f"\n{'-'*60}")

@@ -32,6 +32,7 @@ pydantic>=2.7.0            # Structured data models for agent outputs
 
 # --- Environment & Config ---
 python-dotenv>=1.0.0       # Load .env file for API keys
+truststore>=0.10.0         # Use OS trust store for SSL (corporate-firewall safe)
 
 # --- Charts & HTML Report ---
 plotly>=5.20.0             # Interactive candlestick chart embedded in HTML report
