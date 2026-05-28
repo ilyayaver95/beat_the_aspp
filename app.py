@@ -260,6 +260,89 @@ with st.sidebar:
             on_change=_apply_user_keys,
         )
 
+    # ── Telegram alerts (per-user, saved in DB) ────────────────────
+    _tg_token_saved, _tg_chat_saved = auth_db.get_telegram_credentials(_USER_ID)
+    _tg_configured = bool(_tg_token_saved and _tg_chat_saved)
+    with st.expander(
+        "📱 Telegram Alerts" + (" ✅" if _tg_configured else ""),
+        expanded=not _tg_configured,
+    ):
+        if _tg_configured:
+            st.success(
+                f"Alerts go to your private chat "
+                f"(`...{_tg_token_saved[-6:]}` → chat `{_tg_chat_saved}`)."
+            )
+        else:
+            st.caption(
+                "Paste a bot token + chat id to receive **your own** buy/sell "
+                "zone alerts. Stored only on your account."
+            )
+
+        st.text_input(
+            "Bot token",
+            key="tg_bot_token_input",
+            type="password",
+            value=_tg_token_saved or "",
+            placeholder="123456789:ABCdef...",
+            help="From @BotFather → /newbot",
+        )
+        st.text_input(
+            "Chat id",
+            key="tg_chat_id_input",
+            value=_tg_chat_saved or "",
+            placeholder="e.g. 123456789",
+            help=(
+                "Start a chat with your bot, send any message, then open "
+                "https://api.telegram.org/bot<TOKEN>/getUpdates and copy "
+                "the chat.id value."
+            ),
+        )
+
+        col_save, col_test, col_clear = st.columns(3)
+
+        if col_save.button("💾 Save", use_container_width=True, key="tg_save_btn"):
+            try:
+                auth_db.set_telegram_credentials(
+                    _USER_ID,
+                    st.session_state.get("tg_bot_token_input", ""),
+                    st.session_state.get("tg_chat_id_input", ""),
+                )
+                st.success("Saved.")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+
+        if col_test.button(
+            "🧪 Test",
+            use_container_width=True,
+            key="tg_test_btn",
+            disabled=not (
+                st.session_state.get("tg_bot_token_input", "").strip()
+                and st.session_state.get("tg_chat_id_input", "").strip()
+            ),
+        ):
+            from alerts.telegram import send_alert as _tg_send
+            result = _tg_send(
+                f"✅ Beat the ASPP test message for <b>{_USER['username']}</b>",
+                token=st.session_state.get("tg_bot_token_input", ""),
+                chat_id=st.session_state.get("tg_chat_id_input", ""),
+            )
+            if result.get("success"):
+                st.success("Sent! Check Telegram.")
+            else:
+                st.error(f"Failed: {result.get('error')}")
+
+        if col_clear.button(
+            "🗑 Clear",
+            use_container_width=True,
+            key="tg_clear_btn",
+            disabled=not _tg_configured,
+        ):
+            auth_db.clear_telegram_credentials(_USER_ID)
+            st.session_state.pop("tg_bot_token_input", None)
+            st.session_state.pop("tg_chat_id_input", None)
+            st.rerun()
+
     st.markdown("## ⭐ Favorites")
     favorites = load_favorites()
 
@@ -797,7 +880,8 @@ if _tickers_to_scan:
             # Send Telegram alerts only when price FIRST enters the zone (state change).
             # Uses persisted alert_state.json — avoids repeated messages on every scan.
             if is_fresh_scan:
-                if telegram_configured():
+                _tg_tok, _tg_cid = auth_db.get_telegram_credentials(_USER_ID)
+                if telegram_configured(token=_tg_tok, chat_id=_tg_cid):
                     from scanner import check_and_update_zone_state
                     # Update state for all scanned tickers (tracks zone exits too)
                     for r in results:
@@ -805,7 +889,7 @@ if _tickers_to_scan:
                             continue
                         if r.has_alert:
                             if check_and_update_zone_state(r.ticker, r.zone_status):
-                                tg_result = send_zone_alert(r)
+                                tg_result = send_zone_alert(r, token=_tg_tok, chat_id=_tg_cid)
                                 if tg_result["success"]:
                                     st.success(f"✅ Telegram alert sent for **{r.ticker}** ({r.zone_status})")
                                 else:
@@ -817,14 +901,9 @@ if _tickers_to_scan:
                             check_and_update_zone_state(r.ticker, r.zone_status)
                 else:
                     st.info(
-                        "📱 **Telegram alerts not configured.** To receive alerts:\n\n"
-                        "1. Message **@BotFather** on Telegram → `/newbot`\n"
-                        "2. Copy the bot token\n"
-                        "3. Start a chat with your bot, send any message\n"
-                        "4. Get your chat\\_id: `https://api.telegram.org/bot<TOKEN>/getUpdates`\n"
-                        "5. Add to `.env`:\n\n"
-                        "`TELEGRAM_BOT_TOKEN=your_bot_token`\n"
-                        "`TELEGRAM_CHAT_ID=your_chat_id`"
+                        "📱 **Telegram alerts not configured.** Open the "
+                        "**📱 Telegram Alerts** panel in the sidebar to paste "
+                        "your bot token + chat id."
                     )
         elif is_fresh_scan:
             st.info("No tickers in buy or sell zone right now.")

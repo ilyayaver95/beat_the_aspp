@@ -23,31 +23,46 @@ import requests
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 
-def is_configured() -> bool:
-    """Check if Telegram bot token and chat ID are set."""
-    return bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
+def _resolve(token: str | None, chat_id: str | None) -> tuple[str | None, str | None]:
+    """Caller-supplied creds take precedence; fall back to env vars."""
+    tok = (token or "").strip() or os.getenv("TELEGRAM_BOT_TOKEN")
+    cid = (chat_id or "").strip() or os.getenv("TELEGRAM_CHAT_ID")
+    return tok or None, cid or None
 
 
-def get_config_status() -> dict:
-    """Return which env vars are set (for debugging in the UI)."""
+def is_configured(token: str | None = None, chat_id: str | None = None) -> bool:
+    """Check if a working Telegram token + chat id is available."""
+    tok, cid = _resolve(token, chat_id)
+    return bool(tok and cid)
+
+
+def get_config_status(token: str | None = None, chat_id: str | None = None) -> dict:
+    """Return which credentials are set (for debugging in the UI)."""
+    tok, cid = _resolve(token, chat_id)
     return {
-        "TELEGRAM_BOT_TOKEN": bool(os.getenv("TELEGRAM_BOT_TOKEN")),
-        "TELEGRAM_CHAT_ID": bool(os.getenv("TELEGRAM_CHAT_ID")),
+        "TELEGRAM_BOT_TOKEN": bool(tok),
+        "TELEGRAM_CHAT_ID": bool(cid),
     }
 
 
-def send_alert(message: str) -> dict:
+def send_alert(
+    message: str,
+    token: str | None = None,
+    chat_id: str | None = None,
+) -> dict:
     """
     Send a Telegram message via Bot API.
+
+    Per-user credentials passed via `token` / `chat_id` take precedence over
+    the TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env vars (used by CLI scripts).
 
     Returns:
         {"success": True/False, "error": "..." if failed}
     """
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    tok, cid = _resolve(token, chat_id)
 
-    if not token or not chat_id:
-        missing = [k for k, v in get_config_status().items() if not v]
+    if not tok or not cid:
+        missing = [k for k, v in get_config_status(token, chat_id).items() if not v]
         return {
             "success": False,
             "error": f"Telegram not configured. Missing: {', '.join(missing)}",
@@ -55,9 +70,9 @@ def send_alert(message: str) -> dict:
 
     try:
         resp = requests.post(
-            TELEGRAM_API.format(token=token),
+            TELEGRAM_API.format(token=tok),
             json={
-                "chat_id": chat_id,
+                "chat_id": cid,
                 "text": message,
                 "parse_mode": "HTML",
             },
@@ -76,7 +91,11 @@ def send_alert(message: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def send_zone_alert(scan_result) -> dict:
+def send_zone_alert(
+    scan_result,
+    token: str | None = None,
+    chat_id: str | None = None,
+) -> dict:
     """
     Send a formatted buy/sell zone alert for a ScanResult.
     Uses HTML formatting for Telegram (bold, italic).
@@ -113,4 +132,4 @@ def send_zone_alert(scan_result) -> dict:
     lines.append(f"📅 Analysis: {r.analysis_date}")
     lines.append("📈 <i>Beat the ASPP Scanner</i>")
 
-    return send_alert("\n".join(lines))
+    return send_alert("\n".join(lines), token=token, chat_id=chat_id)
