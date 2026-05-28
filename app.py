@@ -113,21 +113,23 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-FAVORITES_FILE = "data/favorites.json"
+# ── Authentication gate ───────────────────────────────────────────
+# All app state below is keyed off the logged-in user, so this MUST
+# come before any data loading.
+from auth import require_login, render_sidebar_user_box
+import auth_db
+
+_USER = require_login()
+_USER_ID = int(_USER["id"])
 
 
 # ── Helpers ────────────────────────────────────────────────────────
 def load_favorites() -> list[str]:
-    if os.path.exists(FAVORITES_FILE):
-        with open(FAVORITES_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return []
+    return auth_db.get_favorites(_USER_ID)
 
 
 def save_favorites(favs: list[str]) -> None:
-    os.makedirs("data", exist_ok=True)
-    with open(FAVORITES_FILE, "w", encoding="utf-8") as f:
-        json.dump(favs, f)
+    auth_db.set_favorites(_USER_ID, favs)
 
 
 def get_saved_reports(ticker: str) -> list[tuple[str, str]]:
@@ -204,6 +206,8 @@ def _render_html_report(html_path: str, header_msg: str = "", header_type: str =
 
 
 # ── Sidebar — Favorites ────────────────────────────────────────────
+render_sidebar_user_box()
+
 with st.sidebar:
     # ── API Keys (Bring Your Own) ──────────────────────────────────────
     _has_deployer_anth = bool(_DEPLOYER_ANTHROPIC_KEY)

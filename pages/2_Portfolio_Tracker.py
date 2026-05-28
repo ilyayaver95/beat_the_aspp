@@ -4,17 +4,15 @@ pages/2_Portfolio_Tracker.py
 Portfolio Tracker — Streamlit multi-page app.
 
 Per-user isolation: each authenticated user gets a private SQLite database
-derived from their email address. On Streamlit Community Cloud, enable
-"Viewer authentication" in app settings — no extra OAuth setup needed.
+keyed off their account id from the central users DB (auth.py).
 """
-
-import hashlib
 
 import yfinance as yf
 import pandas as pd
 import streamlit as st
 from datetime import date, datetime
 
+from auth import require_login, render_sidebar_user_box, user_db_suffix
 from portfolio_db import (
     init_db, add_trade, update_trade, delete_trade,
     get_all_trades, get_trades_for_ticker, get_tickers,
@@ -28,32 +26,14 @@ st.set_page_config(
     layout="wide",
 )
 
-
-# ── User identity ──────────────────────────────────────────────────────────
-
-def _get_user_email() -> str | None:
-    """Return the logged-in user's email, or None when running locally."""
-    try:
-        return st.user.email or None
-    except Exception:
-        return None
+# ── Authentication gate ──────────────────────────────────────────────────
+_USER = require_login()
+render_sidebar_user_box()
 
 
 def _portfolio_db_path() -> str:
-    email = _get_user_email()
-    if email:
-        safe = hashlib.sha256(email.lower().encode()).hexdigest()[:20]
-        return f"data/portfolio_{safe}.db"
-    return "data/portfolio_local.db"
+    return f"data/portfolio_{user_db_suffix(_USER)}.db"
 
-
-# ── Sidebar: user info ─────────────────────────────────────────────────────
-
-_email = _get_user_email()
-if _email:
-    st.sidebar.markdown(f"**Signed in as**  \n{_email}")
-else:
-    st.sidebar.caption("Running locally — data saved to portfolio_local.db")
 
 _DB = _portfolio_db_path()
 init_db(_DB)

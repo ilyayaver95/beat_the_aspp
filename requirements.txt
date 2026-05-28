@@ -42,3 +42,6 @@ rich>=13.7.0               # Pretty terminal output (tables, panels, colors)
 
 # --- Web UI ---
 streamlit>=1.40.0          # Web app interface (run: streamlit run app.py)
+
+# --- Authentication ---
+bcrypt>=4.0.0              # Password hashing for the login system
