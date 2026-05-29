@@ -8,7 +8,7 @@ register screen and halts execution if no user is signed in. Otherwise
 it returns the current user dict.
 
 Supports:
-  - Username + password (bcrypt, stored in data/users.db)
+  - Username + password (bcrypt, stored in the shared DB)
   - Optional Google OAuth via Streamlit's native st.login()
     (requires an [auth] section in .streamlit/secrets.toml)
 """
@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import streamlit as st
 
+import db as _db
 import auth_db
 
-_AUTH_DB = "data/users.db"
 _SESSION_KEY = "auth_user"
 
 
@@ -30,8 +30,8 @@ def get_current_user() -> dict | None:
     user = st.session_state.get(_SESSION_KEY)
     if not user:
         return None
-    # Refresh from DB so any update (e.g. email change) is picked up.
-    fresh = auth_db.get_user_by_id(user["id"], db_path=_AUTH_DB)
+    # Refresh from DB so any update is picked up.
+    fresh = auth_db.get_user_by_id(user["id"])
     if fresh is None:
         st.session_state.pop(_SESSION_KEY, None)
         return None
@@ -49,17 +49,12 @@ def logout() -> None:
             pass
 
 
-def user_db_suffix(user: dict) -> str:
-    """Stable, filesystem-safe slug for per-user DB paths."""
-    return f"u{int(user['id'])}"
-
-
 def require_login() -> dict:
     """
     Gate page access. Returns the current user dict when logged in.
     When no user is logged in, renders the login UI and calls st.stop().
     """
-    auth_db.init_db(_AUTH_DB)
+    _db.init_all()
 
     user = get_current_user()
     if user is not None:
@@ -78,7 +73,6 @@ def require_login() -> dict:
                         google_sub=str(sub),
                         email=email,
                         name=name,
-                        db_path=_AUTH_DB,
                     )
                     st.session_state[_SESSION_KEY] = user
                     st.rerun()
@@ -119,7 +113,7 @@ def _render_login_page() -> None:
             submitted = st.form_submit_button("Log in", type="primary", use_container_width=True)
         if submitted:
             user = auth_db.login_with_password(
-                username=username, password=password, db_path=_AUTH_DB
+                username=username, password=password,
             )
             if user is None:
                 st.error("Invalid username or password.")
@@ -158,7 +152,6 @@ def _render_login_page() -> None:
                         username=r_username,
                         password=r_password,
                         email=r_email,
-                        db_path=_AUTH_DB,
                     )
                     st.session_state[_SESSION_KEY] = user
                     st.success(f"Welcome, {user['username']}!")

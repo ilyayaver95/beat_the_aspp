@@ -45,3 +45,7 @@ streamlit>=1.40.0          # Web app interface (run: streamlit run app.py)
 
 # --- Authentication ---
 bcrypt>=4.0.0              # Password hashing for the login system
+
+# --- Database (Postgres on Streamlit Cloud, SQLite locally) ---
+sqlalchemy>=2.0,<2.1       # Dialect-agnostic SQL layer
+psycopg[binary]>=3.1       # Postgres driver used when DATABASE_URL is set

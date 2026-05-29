@@ -3,8 +3,9 @@ pages/2_Portfolio_Tracker.py
 ============================
 Portfolio Tracker — Streamlit multi-page app.
 
-Per-user isolation: each authenticated user gets a private SQLite database
-keyed off their account id from the central users DB (auth.py).
+Multi-tenant: every row is scoped by user_id, so the shared external DB
+(Postgres on Streamlit Cloud, SQLite locally) safely holds everyone's
+trades without cross-user leaks.
 """
 
 import yfinance as yf
@@ -12,7 +13,7 @@ import pandas as pd
 import streamlit as st
 from datetime import date, datetime
 
-from auth import require_login, render_sidebar_user_box, user_db_suffix
+from auth import require_login, render_sidebar_user_box
 from portfolio_db import (
     init_db, add_trade, update_trade, delete_trade,
     get_all_trades, get_trades_for_ticker, get_tickers,
@@ -28,15 +29,10 @@ st.set_page_config(
 
 # ── Authentication gate ──────────────────────────────────────────────────
 _USER = require_login()
+_USER_ID = int(_USER["id"])
 render_sidebar_user_box()
 
-
-def _portfolio_db_path() -> str:
-    return f"data/portfolio_{user_db_suffix(_USER)}.db"
-
-
-_DB = _portfolio_db_path()
-init_db(_DB)
+init_db()
 
 
 # ── Price helpers ──────────────────────────────────────────────────────────
@@ -84,8 +80,8 @@ def _fmt_pct(value: float) -> str:
 
 # ── Build full portfolio snapshot ──────────────────────────────────────────
 
-def _build_portfolio(db_path: str) -> tuple[list[dict], dict]:
-    tickers = get_tickers(db_path=db_path)
+def _build_portfolio(user_id: int) -> tuple[list[dict], dict]:
+    tickers = get_tickers(user_id)
     if not tickers:
         return [], {}
 
@@ -98,7 +94,7 @@ def _build_portfolio(db_path: str) -> tuple[list[dict], dict]:
     total_real   = 0.0
 
     for tkr in tickers:
-        trades = get_trades_for_ticker(tkr, db_path=db_path)
+        trades = get_trades_for_ticker(user_id, tkr)
         if not trades:
             continue
         pos = compute_position(trades)
@@ -131,8 +127,8 @@ def _build_portfolio(db_path: str) -> tuple[list[dict], dict]:
 # ══════════════════════════════════════════════════════════════════
 
 @st.fragment(run_every=30)
-def _dashboard(db_path: str) -> None:
-    positions, summary = _build_portfolio(db_path)
+def _dashboard(user_id: int) -> None:
+    positions, summary = _build_portfolio(user_id)
 
     if not positions:
         st.info("No trades recorded yet. Add your first trade below.")
@@ -235,7 +231,7 @@ st.title("💼 Portfolio Tracker")
 st.caption("Track your stock trades · Real-time P&L · No AI tokens used")
 st.divider()
 
-_dashboard(_DB)
+_dashboard(_USER_ID)
 
 st.divider()
 
@@ -278,13 +274,13 @@ with col_form:
         else:
             try:
                 new_id = add_trade(
+                    user_id=_USER_ID,
                     ticker=ticker_in,
                     action=action_in,
                     trade_date=str(date_in),
                     quantity=qty_in,
                     price_per_share=price_in,
                     notes=notes_in,
-                    db_path=_DB,
                 )
                 _fetch_prices.clear()
                 st.success(
@@ -300,7 +296,7 @@ with col_form:
 with col_history:
     st.markdown("### 📋 Transaction History")
 
-    all_trades = get_all_trades(db_path=_DB)
+    all_trades = get_all_trades(_USER_ID)
 
     if not all_trades:
         st.info("No trades yet.")
@@ -372,7 +368,7 @@ with col_history:
                         "notes":           changes.get("Notes",     orig["Notes"] or ""),
                     }
                     try:
-                        update_trade(trade_id, db_path=_DB, **merged)
+                        update_trade(trade_id, user_id=_USER_ID, **merged)
                     except ValueError as e:
                         errors.append(f"Row {row_idx+1}: {e}")
 
@@ -382,7 +378,7 @@ with col_history:
                         continue
                     trade_id = int(df_display.iloc[row_idx]["ID"])
                     try:
-                        delete_trade(trade_id, db_path=_DB)
+                        delete_trade(trade_id, _USER_ID)
                     except Exception as e:
                         errors.append(f"Delete row {row_idx+1}: {e}")
 
