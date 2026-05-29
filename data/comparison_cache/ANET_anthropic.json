@@ -1,0 +1,47 @@
+{
+  "ticker": "ANET",
+  "model": "claude-sonnet-4-6 (agents) + claude-opus-4-6 (synthesis)",
+  "elapsed_sec": 57.26,
+  "cost_usd": 0.1951,
+  "tokens": 12794,
+  "report": {
+    "ticker": "ANET",
+    "company_name": "Arista Networks, Inc.",
+    "report_date": "2026-05-24",
+    "technical_score": 5.0,
+    "fundamental_score": 8.2,
+    "sentiment_score": 8.2,
+    "composite_score": 7.1,
+    "verdict": "BUY",
+    "confidence_pct": 68.0,
+    "time_horizon": "6-12 months",
+    "current_price": 154.02999877929688,
+    "price_target": "$170-185",
+    "analyst_thesis": "Arista Networks remains one of the highest-quality secular growth stories in networking, with 28.6% revenue growth, a software-like 39% net margin, zero debt, and $4.25B in free cash flow \u2014 a financial profile that justifies a premium multiple, though at 52.93x trailing P/E the stock prices in considerable execution perfection. The AI infrastructure spending cycle \u2014 shifting from GPU compute to high-speed networking \u2014 is a structural tailwind that supports multi-year demand from hyperscalers like Microsoft, Meta, and Google, while enterprise campus expansion via Gartner-recognized AIOps platforms diversifies the revenue base. However, near-term technicals are the sticking point: distribution volume and a May 6 gap-down signal institutional profit-taking at these levels, with resistance at $156.32 capping upside until cleared, making entry timing critical for new positions.",
+    "key_opportunities": [
+      "AI networking is the next phase of the AI infrastructure buildout \u2014 ANET is the premier pure-play on hyperscaler switching demand",
+      "52.9% estimated EPS growth provides earnings momentum to potentially compress the forward P/E into the mid-30s",
+      "Zero-debt balance sheet and $4.25B FCF provide capital return optionality (buybacks) and downside resilience",
+      "Enterprise campus market expansion via ruggedized platforms and AIOps software adds a second growth vector beyond cloud",
+      "Gartner Magic Quadrant leadership validates competitive positioning against Cisco in enterprise LAN"
+    ],
+    "key_risks": [
+      "52.93x trailing P/E and 19.97x P/S leave zero margin for error \u2014 any guidance miss could trigger a 15-20% correction",
+      "Hyperscaler capex cycles are notoriously lumpy; a pause from any top-3 customer could meaningfully impact revenue",
+      "Cisco's 33% surge signals intensifying AI networking competition that could pressure Arista's premium pricing",
+      "Customer concentration among 3-4 hyperscalers creates binary revenue dependency",
+      "Distribution volume pattern suggests smart money may be reducing exposure near resistance"
+    ],
+    "bull_case": "Hyperscaler AI capex accelerates through 2026-2027, ANET captures expanding share of 800G/1.6T ethernet switching, enterprise campus revenue scales to 20%+ of the mix, and EPS growth sustains 40%+ allowing the stock to grow into its multiple and reach $185+ within 12 months.",
+    "bear_case": "Hyperscaler capex pauses or shifts toward custom silicon/networking solutions, Cisco gains share in AI switching, the 52.9x P/E compresses on any earnings deceleration, and the distribution volume pattern resolves to the downside with a retest of the $136.79 support level \u2014 a potential 11% drawdown from current levels.",
+    "watch_for": [
+      "Breakout above $156.32 on above-average volume \u2014 confirms bullish continuation toward $162-180 range",
+      "Pullback to $149.47 (EMA20) buy zone \u2014 an attractive entry point if fundamentals remain intact",
+      "Next quarterly earnings report: revenue growth trajectory and forward guidance on AI networking demand",
+      "Microsoft, Meta, and Google capex announcements and commentary on networking infrastructure spend",
+      "Cisco competitive dynamics \u2014 monitor Cisco's AI networking revenue disclosures for share shift signals",
+      "Free cash flow conversion sustainability above $1.5B per quarter"
+    ]
+  },
+  "saved_at": "2026-05-24T22:57:58.887438"
+}
