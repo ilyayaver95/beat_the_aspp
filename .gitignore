@@ -43,3 +43,11 @@ data/analyses/
 data/portfolio_baseline.db
 data/portfolio_baseline.db-*
 data/portfolio_baseline.json
+
+# ── Per-user database files (private — never upload) ──────────────
+data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite-*
+data/comparison_cache/
+data/favorites.json

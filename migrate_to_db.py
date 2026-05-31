@@ -119,8 +119,10 @@ def migrate_users(dry_run: bool) -> dict[int, int]:
                 "tg_cid":        u["telegram_chat_id"]   if "telegram_chat_id"   in u.keys() else None,
             }
             if dry_run:
-                new_id = -1
-                print(f"[users] would insert '{username}'")
+                # In dry-run, reuse the OLD id so the cascading row counts
+                # (favorites etc.) report something useful.
+                new_id = old_id
+                print(f"[users] would insert '{username}' (preview id={old_id})")
             else:
                 if eng.dialect.name == "postgresql":
                     res = conn.execute(
@@ -154,7 +156,7 @@ def migrate_users(dry_run: bool) -> dict[int, int]:
             inserted = 0
             for f in old_favs:
                 new_uid = mapping.get(int(f["user_id"]))
-                if new_uid is None or new_uid < 0:
+                if new_uid is None:
                     continue
                 if _row_exists(
                     conn,
