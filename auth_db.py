@@ -169,14 +169,16 @@ def upsert_google_user(google_sub: str, email: str = "", name: str = "") -> dict
         ).first()
         if row:
             d = _row_to_dict(row)
+            new_email = email or d["email"]
             conn.execute(
                 text(
                     "UPDATE users SET last_login = :now, email = :email "
                     "WHERE id = :id"
                 ),
-                {"now": now, "email": email or d["email"], "id": d["id"]},
+                {"now": now, "email": new_email, "id": d["id"]},
             )
             d["last_login"] = now
+            d["email"] = new_email
             return d
 
         # Derive a unique username from the email local part / name.
