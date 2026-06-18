@@ -148,3 +148,15 @@
 {"ts": "2026-05-28T18:18:12.686683+00:00", "sid": "868494fb", "tkr": "BE", "op": "fundamental_agent", "mdl": "claude-sonnet-4-6", "in": 744, "out": 408, "cw": 2043, "cr": 0, "$": 0.016013}
 {"ts": "2026-05-28T18:18:16.994224+00:00", "sid": "868494fb", "tkr": "BE", "op": "sentiment_agent", "mdl": "claude-sonnet-4-6", "in": 1527, "out": 426, "cw": 1325, "cr": 0, "$": 0.01594}
 {"ts": "2026-05-28T18:19:02.839387+00:00", "sid": "868494fb", "tkr": "BE", "op": "synthesis", "mdl": "claude-opus-4-6", "in": 3443, "out": 1754, "cw": 0, "cr": 0, "$": 0.183195}
+{"ts": "2026-06-11T18:10:20.876647+00:00", "sid": "df74a0ea", "tkr": "ONDS", "op": "technical_agent", "mdl": "claude-sonnet-4-6", "in": 944, "out": 185, "cw": 0, "cr": 0, "$": 0.005607}
+{"ts": "2026-06-11T18:10:39.579105+00:00", "sid": "df74a0ea", "tkr": "ONDS", "op": "sentiment_agent", "mdl": "claude-sonnet-4-6", "in": 1590, "out": 603, "cw": 1325, "cr": 0, "$": 0.018784}
+{"ts": "2026-06-11T18:10:47.819138+00:00", "sid": "df74a0ea", "tkr": "ONDS", "op": "fundamental_agent", "mdl": "claude-sonnet-4-6", "in": 751, "out": 396, "cw": 2043, "cr": 0, "$": 0.015854}
+{"ts": "2026-06-11T18:12:02.842912+00:00", "sid": "df74a0ea", "tkr": "ONDS", "op": "synthesis", "mdl": "claude-opus-4-6", "in": 3633, "out": 2033, "cw": 0, "cr": 0, "$": 0.20697}
+{"ts": "2026-06-11T18:32:12.414492+00:00", "sid": "df74a0ea", "tkr": "INTC", "op": "technical_agent", "mdl": "claude-sonnet-4-6", "in": 920, "out": 140, "cw": 0, "cr": 0, "$": 0.00486}
+{"ts": "2026-06-11T18:32:15.107826+00:00", "sid": "df74a0ea", "tkr": "INTC", "op": "fundamental_agent", "mdl": "claude-sonnet-4-6", "in": 741, "out": 411, "cw": 2043, "cr": 0, "$": 0.016049}
+{"ts": "2026-06-11T18:32:19.176106+00:00", "sid": "df74a0ea", "tkr": "INTC", "op": "sentiment_agent", "mdl": "claude-sonnet-4-6", "in": 1311, "out": 384, "cw": 1325, "cr": 0, "$": 0.014662}
+{"ts": "2026-06-11T18:33:13.926806+00:00", "sid": "df74a0ea", "tkr": "INTC", "op": "synthesis", "mdl": "claude-opus-4-6", "in": 3373, "out": 1816, "cw": 0, "cr": 0, "$": 0.186795}
+{"ts": "2026-06-17T14:19:14.880344+00:00", "sid": "9fcc4dc6", "tkr": "RGTI", "op": "technical_agent", "mdl": "claude-sonnet-4-6", "in": 953, "out": 215, "cw": 0, "cr": 0, "$": 0.006084}
+{"ts": "2026-06-17T14:19:28.645492+00:00", "sid": "9fcc4dc6", "tkr": "RGTI", "op": "sentiment_agent", "mdl": "claude-sonnet-4-6", "in": 1480, "out": 541, "cw": 1325, "cr": 0, "$": 0.017524}
+{"ts": "2026-06-17T14:19:53.530911+00:00", "sid": "9fcc4dc6", "tkr": "RGTI", "op": "fundamental_agent", "mdl": "claude-sonnet-4-6", "in": 756, "out": 419, "cw": 2043, "cr": 0, "$": 0.016214}
+{"ts": "2026-06-17T14:20:56.790848+00:00", "sid": "9fcc4dc6", "tkr": "RGTI", "op": "synthesis", "mdl": "claude-opus-4-6", "in": 3637, "out": 1701, "cw": 0, "cr": 0, "$": 0.18213}

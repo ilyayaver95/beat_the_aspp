@@ -10,6 +10,7 @@ trades without cross-user leaks.
 
 import yfinance as yf
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from datetime import date, datetime
 
@@ -19,6 +20,7 @@ from portfolio_db import (
     get_all_trades, get_trades_for_ticker, get_tickers,
     compute_position, enrich_with_price,
 )
+from trade_chart import build_trade_picture
 
 # ── Page config ────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -76,6 +78,31 @@ def _fmt_currency(value: float) -> str:
 def _fmt_pct(value: float) -> str:
     sign = "+" if value >= 0 else ""
     return f"{sign}{value:.2f}%"
+
+
+def _allocation_pie(labels: list[str], values: list[float], title: str) -> go.Figure:
+    fig = go.Figure(data=[go.Pie(
+        labels=labels,
+        values=values,
+        hole=0.45,
+        textinfo="label+percent",
+        textposition="inside",
+        hovertemplate="<b>%{label}</b><br>$%{value:,.2f}<br>%{percent}<extra></extra>",
+        marker=dict(line=dict(color="#1a1a2e", width=2)),
+    )])
+    fig.update_layout(
+        title=dict(text=title, x=0.5, xanchor="center",
+                   font=dict(size=14, color="#eee")),
+        showlegend=True,
+        legend=dict(orientation="v", x=1.02, y=0.5,
+                    font=dict(color="#ddd", size=11)),
+        margin=dict(t=40, b=10, l=10, r=10),
+        height=380,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#eee"),
+    )
+    return fig
 
 
 # ── Build full portfolio snapshot ──────────────────────────────────────────
@@ -176,6 +203,16 @@ def _dashboard(user_id: int) -> None:
                 unsafe_allow_html=True,
             )
 
+    if open_pos:
+        st.markdown("#### Portfolio Allocation")
+        labels = [p["ticker"] for p in open_pos]
+        values = [p["current_value"] for p in open_pos]
+        st.plotly_chart(
+            _allocation_pie(labels, values, "By current value"),
+            use_container_width=True,
+            key="alloc_pie_p2",
+        )
+
     st.markdown("#### Position Details")
     rows = []
     for pos in positions:
@@ -232,6 +269,66 @@ st.caption("Track your stock trades · Real-time P&L · No AI tokens used")
 st.divider()
 
 _dashboard(_USER_ID)
+
+st.divider()
+
+# ── Trade Picture ──────────────────────────────────────────────────
+st.markdown("### 📊 Trade Picture")
+st.caption(
+    "Pick a ticker to see its price chart with your BUY (▲ green) and "
+    "SELL (▼ red) points overlaid — useful for reviewing how a round-trip "
+    "trade actually played out."
+)
+
+_all_trades_for_picker = get_all_trades(_USER_ID)
+if not _all_trades_for_picker:
+    st.info("No trades yet — add a BUY/SELL below and your trade picture will appear here.")
+else:
+    # Default to the most recently-sold ticker (matches the "when I sell" UX).
+    _sold_recent = sorted(
+        (t for t in _all_trades_for_picker if (t.get("action") or "").upper() == "SELL"),
+        key=lambda t: t.get("trade_date", ""),
+        reverse=True,
+    )
+    _all_tickers_ordered = []
+    seen = set()
+    for t in _sold_recent + _all_trades_for_picker:
+        tkr = (t.get("ticker") or "").upper()
+        if tkr and tkr not in seen:
+            seen.add(tkr)
+            _all_tickers_ordered.append(tkr)
+
+    pic_ticker = st.selectbox(
+        "Ticker", _all_tickers_ordered, key="trade_pic_ticker_p2",
+    )
+
+    if pic_ticker:
+        ticker_trades = get_trades_for_ticker(_USER_ID, pic_ticker)
+        with st.spinner(f"Loading {pic_ticker} history…"):
+            fig, pic_summary = build_trade_picture(pic_ticker, ticker_trades)
+
+        s_col1, s_col2, s_col3, s_col4 = st.columns(4)
+        s_col1.metric("Bought (qty)",  f"{pic_summary['total_bought_qty']:.4g}")
+        s_col2.metric("Sold (qty)",    f"{pic_summary['total_sold_qty']:.4g}")
+        s_col3.metric("Avg buy",  _fmt_currency(pic_summary["avg_buy_price"]))
+        s_col4.metric(
+            "Avg sell",
+            _fmt_currency(pic_summary["avg_sell_price"]),
+            delta=(_fmt_pct(pic_summary["return_pct"])
+                   if pic_summary["total_sold_qty"] > 0 else None),
+            delta_color="normal",
+        )
+
+        if fig is None:
+            st.warning(
+                f"Couldn't load price history for **{pic_ticker}**. "
+                "Yahoo may be rate-limiting — try again in a minute."
+            )
+        else:
+            st.plotly_chart(
+                fig, use_container_width=True,
+                key=f"trade_pic_fig_p2_{pic_ticker}",
+            )
 
 st.divider()
 

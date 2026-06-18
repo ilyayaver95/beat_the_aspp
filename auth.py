@@ -19,8 +19,11 @@ import streamlit as st
 
 import db as _db
 import auth_db
+from alerts.email_sender import send_email
 
 _SESSION_KEY = "auth_user"
+_RESET_STAGE_KEY = "auth_reset_stage"
+_RESET_EMAIL_KEY = "auth_reset_email"
 
 
 # ── Public API ────────────────────────────────────────────────────
@@ -104,7 +107,9 @@ def _render_login_page() -> None:
     st.title("🔐 Beat the ASPP — Sign in")
     st.caption("Your favorites, portfolio, and saved data are kept private per account.")
 
-    tab_login, tab_register = st.tabs(["Log in", "Create account"])
+    tab_login, tab_register, tab_forgot = st.tabs(
+        ["Log in", "Create account", "Forgot password"]
+    )
 
     with tab_login:
         with st.form("login_form", clear_on_submit=False):
@@ -128,7 +133,11 @@ def _render_login_page() -> None:
                 key="reg_username",
                 help="3-32 chars · letters, digits, dot, underscore, hyphen",
             )
-            r_email = st.text_input("Email (optional)", key="reg_email")
+            r_email = st.text_input(
+                "Email",
+                key="reg_email",
+                help="Required so you can reset your password if you forget it",
+            )
             r_password = st.text_input(
                 "Password",
                 type="password",
@@ -146,6 +155,8 @@ def _render_login_page() -> None:
         if r_submitted:
             if r_password != r_password2:
                 st.error("Passwords do not match.")
+            elif "@" not in (r_email or "") or "." not in (r_email or ""):
+                st.error("A valid email is required for password recovery.")
             else:
                 try:
                     user = auth_db.register_user(
@@ -158,6 +169,9 @@ def _render_login_page() -> None:
                     st.rerun()
                 except ValueError as e:
                     st.error(str(e))
+
+    with tab_forgot:
+        _render_forgot_password()
 
     if _native_login_available():
         st.divider()
@@ -174,6 +188,115 @@ def _render_login_page() -> None:
                 "`.streamlit/secrets.toml` (see Streamlit docs on "
                 "`st.login`). Until then, use a username and password."
             )
+
+
+# ── Forgot password ───────────────────────────────────────────────
+
+def _render_forgot_password() -> None:
+    """Two-step reset: request a code, then submit code + new password.
+
+    Anti-enumeration: we always show the same success message after the
+    request step, regardless of whether the email matched a user.
+    """
+    stage = st.session_state.get(_RESET_STAGE_KEY, "request")
+
+    st.caption(
+        "We'll email you a 6-digit code. It expires in 15 minutes "
+        "and can only be used once."
+    )
+
+    if stage == "request":
+        with st.form("forgot_request_form", clear_on_submit=False):
+            fp_email = st.text_input(
+                "Account email", key="fp_email_req",
+                placeholder="you@example.com",
+            )
+            req_submitted = st.form_submit_button(
+                "Send reset code", type="primary", use_container_width=True
+            )
+        if req_submitted:
+            email = (fp_email or "").strip().lower()
+            if "@" not in email:
+                st.error("Enter the email address on your account.")
+            else:
+                code = auth_db.create_password_reset_code(email)
+                if code:
+                    status = send_email(
+                        to_addr=email,
+                        subject="Your Beat the ASPP password-reset code",
+                        body=(
+                            f"Hi,\n\n"
+                            f"Your password reset code is: {code}\n\n"
+                            f"It expires in 15 minutes and can only be used once.\n"
+                            f"If you didn't request this, you can ignore this email.\n"
+                        ),
+                    )
+                    if not status.get("sent"):
+                        st.error(
+                            "Couldn't send the email: "
+                            f"{status.get('error', 'unknown error')}"
+                        )
+                        return
+                    if status.get("transport") == "dev_file":
+                        st.info(
+                            "SMTP is not configured, so the email was saved "
+                            f"locally to `{status.get('path')}` and printed "
+                            "to the server console. Copy the code from there."
+                        )
+                # Same success message either way (anti-enumeration).
+                st.session_state[_RESET_STAGE_KEY] = "verify"
+                st.session_state[_RESET_EMAIL_KEY] = email
+                st.success(
+                    "If an account exists for that email, a reset code is on "
+                    "its way. Enter it below to set a new password."
+                )
+                st.rerun()
+
+    else:  # stage == "verify"
+        st.write(f"Code sent to **{st.session_state.get(_RESET_EMAIL_KEY, '')}**")
+        with st.form("forgot_verify_form", clear_on_submit=False):
+            fp_code = st.text_input(
+                "6-digit code", key="fp_code", max_chars=6,
+                placeholder="123456",
+            )
+            fp_new = st.text_input(
+                "New password", type="password", key="fp_new",
+                help="Min 6 characters",
+            )
+            fp_new2 = st.text_input(
+                "Confirm new password", type="password", key="fp_new2",
+            )
+            col1, col2 = st.columns(2)
+            with col1:
+                verify_submitted = st.form_submit_button(
+                    "Reset password", type="primary", use_container_width=True
+                )
+            with col2:
+                back = st.form_submit_button(
+                    "Start over", use_container_width=True
+                )
+        if back:
+            st.session_state.pop(_RESET_STAGE_KEY, None)
+            st.session_state.pop(_RESET_EMAIL_KEY, None)
+            st.rerun()
+        if verify_submitted:
+            email = st.session_state.get(_RESET_EMAIL_KEY, "")
+            if fp_new != fp_new2:
+                st.error("Passwords do not match.")
+                return
+            try:
+                ok = auth_db.reset_password_with_code(
+                    email=email, code=fp_code, new_password=fp_new,
+                )
+            except ValueError as e:
+                st.error(str(e))
+                return
+            if not ok:
+                st.error("That code is invalid, expired, or already used.")
+                return
+            st.session_state.pop(_RESET_STAGE_KEY, None)
+            st.session_state.pop(_RESET_EMAIL_KEY, None)
+            st.success("Password updated! You can log in with your new password.")
 
 
 # ── Internals ─────────────────────────────────────────────────────

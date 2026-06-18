@@ -9,7 +9,9 @@ SQLite locally. All SQL is portable between the two dialects.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import hashlib
+import secrets
+from datetime import datetime, timedelta, timezone
 
 import bcrypt
 from sqlalchemy import (
@@ -43,6 +45,20 @@ favorites = Table(
     UniqueConstraint("user_id", "ticker", name="uq_favorites_user_ticker"),
     Index("idx_favorites_user", "user_id"),
 )
+
+password_reset_codes = Table(
+    "password_reset_codes", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("code_hash", String(64), nullable=False),     # sha256 hex digest
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("used_at", DateTime(timezone=True)),          # NULL until consumed
+    Index("idx_pwreset_user", "user_id"),
+)
+
+RESET_CODE_TTL = timedelta(minutes=15)
+RESET_REQUEST_COOLDOWN = timedelta(seconds=60)
 
 
 def init_db() -> None:
@@ -224,6 +240,136 @@ def get_user_by_id(user_id: int) -> dict | None:
             text("SELECT * FROM users WHERE id = :id"), {"id": int(user_id)}
         ).first()
         return _row_to_dict(row)
+
+
+def get_user_by_email(email: str) -> dict | None:
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    with get_engine().begin() as conn:
+        row = conn.execute(
+            text("SELECT * FROM users WHERE email = :e"), {"e": email}
+        ).first()
+        return _row_to_dict(row)
+
+
+# ── Password reset ────────────────────────────────────────────────
+
+def _hash_code(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
+def _generate_code() -> str:
+    """Six-digit numeric code, zero-padded. ~1M combinations is fine
+    given 15-min TTL + single-use + rate limit."""
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def create_password_reset_code(email: str) -> str | None:
+    """Issue a fresh reset code for the user with this email.
+
+    Returns the plaintext code so the caller can email it, or None if
+    the email doesn't match any user OR the user requested one in the
+    last RESET_REQUEST_COOLDOWN seconds (silent — anti-enumeration is
+    the UI layer's job).
+    """
+    user = get_user_by_email(email)
+    if user is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+    with get_engine().begin() as conn:
+        recent = conn.execute(
+            text(
+                "SELECT created_at FROM password_reset_codes "
+                "WHERE user_id = :uid AND used_at IS NULL "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            {"uid": user["id"]},
+        ).first()
+        if recent is not None:
+            created_at = recent[0]
+            if isinstance(created_at, str):
+                created_at = datetime.fromisoformat(created_at)
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            if now - created_at < RESET_REQUEST_COOLDOWN:
+                return None
+
+        code = _generate_code()
+        conn.execute(
+            text(
+                "INSERT INTO password_reset_codes "
+                "  (user_id, code_hash, created_at, expires_at) "
+                "VALUES (:uid, :h, :now, :exp)"
+            ),
+            {
+                "uid": user["id"],
+                "h": _hash_code(code),
+                "now": now,
+                "exp": now + RESET_CODE_TTL,
+            },
+        )
+        return code
+
+
+def reset_password_with_code(email: str, code: str, new_password: str) -> bool:
+    """Consume a valid reset code and update the user's password.
+
+    Returns True on success, False if the email/code combo is unknown,
+    expired, or already used. Raises ValueError if new_password fails
+    validation (so the UI can show the specific reason).
+    """
+    _validate_password(new_password)
+    user = get_user_by_email(email)
+    if user is None:
+        return False
+
+    code = (code or "").strip()
+    if not code:
+        return False
+    code_hash = _hash_code(code)
+    now = datetime.now(timezone.utc)
+
+    with get_engine().begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT id, expires_at, used_at FROM password_reset_codes "
+                "WHERE user_id = :uid AND code_hash = :h "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            {"uid": user["id"], "h": code_hash},
+        ).first()
+        if row is None:
+            return False
+
+        token_id, expires_at, used_at = row[0], row[1], row[2]
+        if used_at is not None:
+            return False
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if now > expires_at:
+            return False
+
+        conn.execute(
+            text("UPDATE users SET password_hash = :pw WHERE id = :id"),
+            {"pw": _hash_password(new_password), "id": user["id"]},
+        )
+        conn.execute(
+            text("UPDATE password_reset_codes SET used_at = :now WHERE id = :id"),
+            {"now": now, "id": token_id},
+        )
+        # Invalidate any other outstanding codes for this user.
+        conn.execute(
+            text(
+                "UPDATE password_reset_codes SET used_at = :now "
+                "WHERE user_id = :uid AND used_at IS NULL"
+            ),
+            {"now": now, "uid": user["id"]},
+        )
+        return True
 
 
 # ── Favorites ─────────────────────────────────────────────────────

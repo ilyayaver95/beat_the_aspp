@@ -18,6 +18,7 @@ Workflow:
 
 import yfinance as yf
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from datetime import date, datetime
 
@@ -33,6 +34,7 @@ from portfolio_baseline_db import (
     add_transfer, update_transfer, delete_transfer,
     get_all_transfers, get_transfer_totals,
 )
+from trade_chart import build_trade_picture
 
 # ── Page config ────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -90,6 +92,31 @@ def _fmt_currency(value: float) -> str:
 def _fmt_pct(value: float) -> str:
     sign = "+" if value >= 0 else ""
     return f"{sign}{value:.2f}%"
+
+
+def _allocation_pie(labels: list[str], values: list[float], title: str) -> go.Figure:
+    fig = go.Figure(data=[go.Pie(
+        labels=labels,
+        values=values,
+        hole=0.45,
+        textinfo="label+percent",
+        textposition="inside",
+        hovertemplate="<b>%{label}</b><br>$%{value:,.2f}<br>%{percent}<extra></extra>",
+        marker=dict(line=dict(color="#1a1a2e", width=2)),
+    )])
+    fig.update_layout(
+        title=dict(text=title, x=0.5, xanchor="center",
+                   font=dict(size=14, color="#eee")),
+        showlegend=True,
+        legend=dict(orientation="v", x=1.02, y=0.5,
+                    font=dict(color="#ddd", size=11)),
+        margin=dict(t=40, b=10, l=10, r=10),
+        height=380,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#eee"),
+    )
+    return fig
 
 
 # ── Snapshot builder ───────────────────────────────────────────────────────
@@ -257,6 +284,32 @@ def _dashboard(user_id: int) -> None:
                 unsafe_allow_html=True,
             )
 
+    if open_pos or summary["free_cash"] > 0:
+        st.markdown("#### Portfolio Allocation")
+        stock_labels = [p["ticker"] for p in open_pos]
+        stock_values = [p["current_value"] for p in open_pos]
+        free_cash = max(0.0, summary["free_cash"])
+
+        col_pie1, col_pie2 = st.columns(2)
+        with col_pie1:
+            if stock_labels:
+                st.plotly_chart(
+                    _allocation_pie(stock_labels, stock_values, "Stocks only"),
+                    use_container_width=True,
+                    key="alloc_pie_p3_stocks",
+                )
+            else:
+                st.info("No open stock positions to plot.")
+        with col_pie2:
+            if stock_labels or free_cash > 0:
+                all_labels = stock_labels + (["Cash"] if free_cash > 0 else [])
+                all_values = stock_values + ([free_cash] if free_cash > 0 else [])
+                st.plotly_chart(
+                    _allocation_pie(all_labels, all_values, "Including cash"),
+                    use_container_width=True,
+                    key="alloc_pie_p3_with_cash",
+                )
+
     st.markdown("#### Position Details")
     rows = []
     for pos in positions:
@@ -321,6 +374,86 @@ st.caption(
 st.divider()
 
 _dashboard(_USER_ID)
+
+st.divider()
+
+# ── Trade Picture ──────────────────────────────────────────────────
+st.markdown("### 📊 Trade Picture")
+st.caption(
+    "Pick a ticker to see its price chart with your BUY (▲ green) and "
+    "SELL (▼ red) points overlaid. Baseline holdings are shown as a "
+    "synthetic BUY on the baseline date."
+)
+
+_baseline_positions = {p["ticker"]: p for p in get_positions(_USER_ID)}
+_post_baseline_trades = get_all_trades(_USER_ID)
+_picker_meta = get_meta(_USER_ID)
+
+_picker_tickers: list[str] = []
+_seen_pick = set()
+# Prefer most recently sold first.
+for t in sorted(
+    (t for t in _post_baseline_trades if (t.get("action") or "").upper() == "SELL"),
+    key=lambda t: t.get("trade_date", ""), reverse=True,
+):
+    tkr = (t.get("ticker") or "").upper()
+    if tkr and tkr not in _seen_pick:
+        _seen_pick.add(tkr); _picker_tickers.append(tkr)
+for t in _post_baseline_trades:
+    tkr = (t.get("ticker") or "").upper()
+    if tkr and tkr not in _seen_pick:
+        _seen_pick.add(tkr); _picker_tickers.append(tkr)
+for tkr in _baseline_positions:
+    if tkr not in _seen_pick:
+        _seen_pick.add(tkr); _picker_tickers.append(tkr)
+
+if not _picker_tickers:
+    st.info("No trades or baseline positions yet — your trade picture will appear once you add some.")
+else:
+    pic_ticker = st.selectbox(
+        "Ticker", _picker_tickers, key="trade_pic_ticker_p3",
+    )
+
+    if pic_ticker:
+        ticker_trades = list(get_trades_for_ticker(_USER_ID, pic_ticker))
+        # If we have a baseline holding, prepend a synthetic BUY on the
+        # baseline date so the chart shows the starting point.
+        if pic_ticker in _baseline_positions:
+            b = _baseline_positions[pic_ticker]
+            if b["quantity"] > 0 and b["avg_cost_per_share"] > 0:
+                ticker_trades = [{
+                    "action":          "BUY",
+                    "trade_date":      _picker_meta.get("as_of_date") or "",
+                    "quantity":        b["quantity"],
+                    "price_per_share": b["avg_cost_per_share"],
+                    "notes":           "baseline",
+                }] + ticker_trades
+
+        with st.spinner(f"Loading {pic_ticker} history…"):
+            fig, pic_summary = build_trade_picture(pic_ticker, ticker_trades)
+
+        s_col1, s_col2, s_col3, s_col4 = st.columns(4)
+        s_col1.metric("Bought (qty)", f"{pic_summary['total_bought_qty']:.4g}")
+        s_col2.metric("Sold (qty)",   f"{pic_summary['total_sold_qty']:.4g}")
+        s_col3.metric("Avg buy",  _fmt_currency(pic_summary["avg_buy_price"]))
+        s_col4.metric(
+            "Avg sell",
+            _fmt_currency(pic_summary["avg_sell_price"]),
+            delta=(_fmt_pct(pic_summary["return_pct"])
+                   if pic_summary["total_sold_qty"] > 0 else None),
+            delta_color="normal",
+        )
+
+        if fig is None:
+            st.warning(
+                f"Couldn't load price history for **{pic_ticker}**. "
+                "Yahoo may be rate-limiting — try again in a minute."
+            )
+        else:
+            st.plotly_chart(
+                fig, use_container_width=True,
+                key=f"trade_pic_fig_p3_{pic_ticker}",
+            )
 
 st.divider()
 

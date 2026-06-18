@@ -29,12 +29,12 @@ When you find yourself lost in the code, come back here and ask: *which step am 
 
 | Step | File responsible | What it owns |
 |---|---|---|
-| Input | `main.py` (CLI) or `app.py` (Streamlit) | Parse arguments, load env, hand off |
+| Input | `main.py` (CLI) or `app.py` + `pages/*.py` (Streamlit, gated by `auth.require_login`) | Parse arguments, load env, identify the user, hand off |
 | Parallel agents | `orchestrator.py` (the dispatch) + `agents/*` (the workers) | Run 3 analyses simultaneously |
 | Reconciliation | `orchestrator.py` (`_synthesize`) | Call Claude Opus to write the verdict |
-| Output | `report_generator.py`, `analysis_store.py` | Write HTML + JSON to disk |
+| Output | `report_generator.py`, `analysis_store.py`, + per-user SQL writes (`auth_db`, `portfolio_db`, `portfolio_baseline_db`) | Write HTML + JSON to disk, scoped state to the DB |
 
-Everything else is **infrastructure**: `llm_client.py` (which LLM to call), `cost_tracker.py` (how much did it cost), `tools/` (where data comes from), `models/` (what shape data has).
+Everything else is **infrastructure**: `llm_client.py` (which LLM to call), `cost_tracker.py` (how much did it cost), `tools/` (where data comes from), `models/` (what shape data has), `db.py` (which SQL engine), `scanner.py` + `alerts/` (closing the loop after analysis).
 
 ---
 
@@ -354,7 +354,85 @@ This is a small detail you should be ready to defend in a review — it's a deli
 
 This is what turns a one-off analysis into a **system**: re-checks favorited tickers during US market hours and pushes Telegram/WhatsApp alerts when price hits the buy zone defined by the latest analysis.
 
-The buy-zone logic is dead simple — within 1.5% above primary support → alert. The interesting part is *staleness handling*: if the last analysis is older than 3 days, re-run before scanning.
+The buy-zone logic is dead simple — within 1.5% above primary support → alert. The interesting part is *staleness handling*: if the last analysis is older than 3 days, re-run before scanning. The Telegram sender in `alerts/telegram.py` looks at **per-user credentials first** (resolved through `auth_db.get_telegram_credentials`) and falls back to env vars only for the CLI path — so each logged-in user gets alerts only on their own bot/chat.
+
+### `auth.py` + `auth_db.py` + `db.py` — The multi-user layer
+
+Originally this app stored everything in flat JSON files (`data/favorites.json`) or per-user SQLite files. That worked for one local user. When the app moved to Streamlit Cloud, two problems showed up: (1) Streamlit Cloud's filesystem is ephemeral and shared, and (2) we wanted real accounts so users couldn't see each other's favorites and Telegram tokens. The whole `auth.py` / `auth_db.py` / `db.py` triangle exists to fix that.
+
+```
+            ┌──────────────────────────────────┐
+            │  auth.require_login() — every    │
+            │  Streamlit page imports this and │
+            │  calls it before any data load.  │
+            └──────────────────────────────────┘
+                            │
+        ┌───────────────────┴────────────────────┐
+        ▼                                        ▼
+┌──────────────────────────┐         ┌────────────────────────────┐
+│ username + password      │         │ Google OAuth via           │
+│ (bcrypt hash in `users`) │         │ st.login("google")         │
+│                          │         │   ↳ upsert_google_user()   │
+└──────────────────────────┘         └────────────────────────────┘
+                            │
+                            ▼
+                ┌───────────────────────────┐
+                │  user dict in session     │
+                │  state. Every downstream  │
+                │  query is keyed on        │
+                │  user_id from now on.     │
+                └───────────────────────────┘
+```
+
+**`db.py` is the only place SQLAlchemy lives.** Exactly one `Engine` per process, lazily created and thread-safe. The selection rule is:
+
+```python
+if DATABASE_URL is set (env or st.secrets):
+    engine = create_engine(postgres_url, pool_pre_ping=True, …)
+else:
+    engine = create_engine("sqlite:///data/local.db", …)
+```
+
+The URL normaliser handles the common gotcha: providers like Neon, Supabase, and Render hand out `postgres://...` URLs, but SQLAlchemy 2.x requires `postgresql+psycopg://...`. We rewrite it transparently so deploys "just work" against any of them. There's one shared `metadata` object — every `*_db.py` module registers its tables on it, so `init_all()` does a single `create_all()` and you never have to remember to run a migration.
+
+**`auth_db.py`** owns the `users` and `favorites` tables. Two kinds of users live in `users`:
+- Password users — `password_hash` is set, `google_sub` is NULL.
+- Google users — `google_sub` is set (the Google subject ID, stable across email changes), `password_hash` is NULL.
+
+The `upsert_google_user()` helper deserves a quick read. It:
+1. Looks up by `google_sub` (not email — emails can change).
+2. If found, updates `last_login` and refreshes the email from Google.
+3. If not, derives a unique username from the email local part and inserts.
+
+**Per-user Telegram credentials live on the user row** (`telegram_bot_token`, `telegram_chat_id`). When the scanner sends an alert it passes those to `alerts.telegram.send_alert` — env-var creds become the CLI fallback only.
+
+### `portfolio_db.py` + `pages/2_Portfolio_Tracker.py` — Trade ledger
+
+Add a `trades` table; **every row has a `user_id`**. The CRUD functions (`add_trade`, `update_trade`, `delete_trade`, `get_all_trades`, …) **all take `user_id` and AND it into the WHERE clause**. This is the single most important security pattern in the multi-user layer:
+
+> *Hard-scope every query by `user_id` at the SQL boundary. Never trust higher layers to filter for you.*
+
+The pure-Python P&L math (`compute_position`, `enrich_with_price`) doesn't touch the DB at all — it's a function of a `list[dict]`. That makes it trivially testable and means the same code drives both the ticker drill-down and the portfolio summary.
+
+### `portfolio_baseline_db.py` + `pages/3_Portfolio_Baseline.py` — Baseline-then-forward
+
+A second portfolio model for the realistic case: *"I don't have my full trade history; I just know what I hold today."* You enter a baseline (one row per ticker with current value $ and total return %), plus free cash and an as-of date. From there you log forward BUY/SELL trades and cash transfers. The dashboard rolls baseline + trades + live prices into value, unrealized P&L, realized P&L, and total return %.
+
+Four tables, all scoped by `user_id`:
+- `baseline_meta` — free_cash and as_of_date (key/value).
+- `baseline_positions` — one row per ticker at the baseline.
+- `baseline_trades` — forward trades since the baseline.
+- `baseline_transfers` — cash IN / OUT events.
+
+### `migrate_to_db.py` — One-shot data migration
+
+When the storage backend changed from "JSON file + per-user SQLite" to "one shared DB scoped by `user_id`", existing local users had legacy data. `migrate_to_db.py` sweeps every known legacy shape (`users.db`, `portfolio_u<N>.db`, `portfolio_<sha20>.db`, `portfolio_baseline*.db`, `favorites.json`) and re-inserts them into the unified schema.
+
+Two design choices worth reading:
+- **Idempotent.** Re-running won't duplicate rows. The script SELECTs by natural key (username, (user_id, ticker), trade signature) and skips the INSERT if a match exists. Steady-state writes inside the app (`auth_db.add_favorite`, etc.) use proper `ON CONFLICT DO NOTHING` instead.
+- **`--dry-run`.** Walks the same code paths but never commits. Always run this first.
+
+This is a generally good shape for any one-off data migration script you'll write again in your career.
 
 ---
 
@@ -373,6 +451,12 @@ Memorize this table. These are the words to use in a code review.
 | **Two-stage prompting** | `_synthesize` (Opus writes) → `_parse_streamed_report` (Sonnet extracts) | Cheap-model JSON parsing of expensive-model prose |
 | **Separation of facts from interpretation** | All math in `tools/`, only scoring + narrative in agents | Deterministic numbers, LLM only judges |
 | **Fallback / graceful degradation** | `_fallback_technical/_fundamental/_sentiment` in orchestrator | A failing data source returns a neutral report instead of crashing the pipeline |
+| **Gate / decorator (semantic)** | `auth.require_login()` at the top of every Streamlit page | One call short-circuits unauthenticated requests before any data is loaded |
+| **Multi-tenant row-level scoping** | `user_id` column on `favorites`, `trades`, `baseline_*` | Hard-scope every query by `user_id` at the SQL boundary; never trust higher layers to filter |
+| **Adapter (URL normaliser)** | `db._normalise_url()` | Plain `postgres://...` strings from Neon / Supabase / Render are rewritten to the SQLAlchemy 2 driver form, so deploys "just work" |
+| **Shared MetaData registry** | One `metadata` in `db.py`, every `*_db.py` registers its tables on it | A single `create_all()` migrates the whole app; no "did you remember to import?" foot-guns |
+| **Per-request credential lookup** | `alerts.telegram.send_alert(token=…, chat_id=…)` falls back to env vars when not provided | Each user's alerts go to their own bot; CLI keeps working without code changes |
+| **Idempotent migration** | `migrate_to_db.py` SELECTs by natural key before each INSERT, plus `--dry-run` | Safe to re-run; safe to *preview* before running |
 
 ---
 
@@ -412,7 +496,25 @@ For each, the question, the right framing, and the trap to avoid.
 - **Answer:** Anthropic's prompt-cache directive. The first call within 5 minutes writes a cache entry (charged at 1.25× input rate). Subsequent calls within 5 minutes read it (charged at 0.1× input rate). System prompts here are 200–800 tokens — caching pays off after just 2 calls.
 
 ### "How would you scale this to 1000 tickers a night?"
-- **Answer:** Switch synthesis to Anthropic's Batches API (50% cost, 24h SLA). Persist to a real DB (SQLite → Postgres). Add a job queue (Celery / RQ). Make the news scraper async with per-source rate limits.
+- **Answer:** Switch synthesis to Anthropic's Batches API (50% cost, 24h SLA). The persistence layer is already on Postgres in production (`db.py`). Add a job queue (Celery / RQ). Make the news scraper async with per-source rate limits.
+
+### "Why one shared DB engine instead of per-request connections?"
+- **Answer:** `db.py` builds a single SQLAlchemy `Engine` lazily on first use, behind a lock. SQLAlchemy's engine *is* a pool — the right abstraction. `pool_pre_ping=True` survives stale connections after Streamlit Cloud sleeps the app. We use `engine.begin()` per write — explicit transactions, no implicit autocommit surprises.
+
+### "How do users stay isolated? What stops user A from seeing user B's trades?"
+- **Answer:** Every per-user table (`favorites`, `trades`, `baseline_*`) has a `user_id` column. Every CRUD function takes `user_id` and includes it in the SQL WHERE clause. The Streamlit page resolves `user_id` exactly once, from `auth.require_login()`, before any data load. There's no "current user" global — it has to be passed in, which prevents accidental cross-user reads.
+
+### "Why both bcrypt and Google OAuth? Isn't that twice the complexity?"
+- **Answer:** Both write into the same `users` table — password users have a `password_hash`, Google users have a `google_sub`. The downstream app treats them identically (it only cares about `user_id`). `auth.py` is the only place that knows the difference, which keeps the cost of the second auth method to ~30 lines.
+
+### "What if the same email logs in via Google after first creating a password account?"
+- **Answer:** Currently they'd become two separate users — `google_sub` is the lookup key for OAuth, not email. Honest weakness. Fix: an explicit "link Google" flow in the user settings page that updates an existing user row instead of creating a new one.
+
+### "Why is the `users` row read fresh from the DB on every request?"
+- **Answer:** `get_current_user()` re-reads from the DB so an admin change (e.g. clearing Telegram credentials) is visible immediately, not just after re-login. The cost is one indexed PK lookup — negligible. The alternative (trust session state) creates stale-data bugs that are very hard to diagnose.
+
+### "Why did you migrate off per-file SQLite?"
+- **Answer:** Streamlit Cloud's filesystem is ephemeral *and* shared across users. A file at `data/portfolio_u3.db` would either disappear on restart or, worse, be visible to other users if they guessed the path. The single shared DB on `DATABASE_URL` (Postgres in prod, one SQLite file locally) fixes both — and the unified schema is easier to reason about.
 
 ---
 
@@ -430,6 +532,11 @@ A reviewer respects honesty more than polish. Practice saying these out loud:
 | `output_format=FundamentalReport` directly on the full schema | Inconsistent with the technical agent's minimal-output approach | Refactor fundamental agent to mirror the technical agent's split |
 | Hardcoded weights (45/35/20) in synthesis | Reflects one analyst philosophy | Could be configurable per-user, or sector-aware |
 | Three providers but no unit tests proving parity | Risk of provider drift | Run a "provider parity" smoke test occasionally |
+| No CSRF protection on login forms | Relying on Streamlit's session model + same-origin | Move sensitive actions behind explicit POST-token forms if exposed publicly |
+| No "link Google to existing account" flow | Same email via password + Google creates two rows | Add a settings-page action that merges by verified email |
+| No rate limiting on the login form | Vulnerable to credential stuffing | Add per-IP attempt counters in front of `login_with_password` |
+| `pages/` Streamlit files repeat the auth + `init_db()` preamble | Cost of multi-page Streamlit's design | Could be extracted into a single `page_setup()` helper |
+| Migration script paths are hard-coded to `./data/` | Fine for local, awkward for a manual cloud import | Accept `--data-dir` flag for arbitrary roots |
 
 If the reviewer points one of these out, **don't get defensive**. Say "yes, you're right, and here's how I'd fix it" — that's the answer that wins the review.
 
