@@ -52,6 +52,7 @@ def generate_html_report(
     market_data: dict | None,
     news_articles: list | None,
     model_name: str = "claude-opus-4-6",
+    open_browser: bool = True,
 ) -> str:
     """
     Generate a complete HTML report and save it to disk.
@@ -103,9 +104,12 @@ def generate_html_report(
     with open(filename, "w", encoding="utf-8") as f:
         f.write(html)
 
-    # Open in browser automatically
     abs_path = os.path.abspath(filename)
-    webbrowser.open(f"file://{abs_path}")
+    if open_browser:
+        # Opt-in: CLI callers (main.py, compare.py) want the report to pop up
+        # automatically. Streamlit / scanner callers pass open_browser=False
+        # because they either render the HTML inline or run in a loop.
+        webbrowser.open(f"file://{abs_path}")
 
     print(f"  [report_generator] Saved: {abs_path}")
     return abs_path

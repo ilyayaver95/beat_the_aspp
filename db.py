@@ -95,4 +95,5 @@ def init_all() -> None:
     import auth_db        # noqa: F401
     import portfolio_db   # noqa: F401
     import portfolio_baseline_db  # noqa: F401
+    import youtube_db     # noqa: F401
     metadata.create_all(get_engine())

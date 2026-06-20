@@ -52,6 +52,7 @@ def run_analysis(
     llm_model: str = None,
     parallel_agents: bool | None = None,
     progress_callback=None,
+    open_browser: bool = True,
 ) -> FinalReport:
     """
     Main orchestration function. Runs all 3 agents in parallel,
@@ -182,6 +183,7 @@ def run_analysis(
         market_data=market_data,
         news_articles=news_articles,
         model_name=client.get_model_name(),
+        open_browser=open_browser,
     )
     if html_path:
         print(f"\n  HTML report saved: {html_path}")

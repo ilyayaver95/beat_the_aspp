@@ -22,10 +22,11 @@ numpy>=1.26.0              # Numerical operations
 ta>=0.11.0                 # Technical indicators (MAs, RSI, MACD — pure Python)
 
 # --- News & Web Scraping ---
-feedparser>=6.0.11         # Parse RSS feeds (Yahoo Finance, Reuters)
+feedparser>=6.0.11         # Parse RSS feeds (Yahoo Finance, Reuters, YouTube channel uploads)
 requests>=2.32.0           # HTTP requests
 beautifulsoup4>=4.12.0     # HTML parsing for news scraping
 lxml>=5.2.0                # Fast HTML/XML parser (used by BeautifulSoup)
+youtube-transcript-api>=0.6.2  # Fetch transcripts for YouTube videos (Micha.Stocks summarizer)
 
 # --- Data Validation & Models ---
 pydantic>=2.7.0            # Structured data models for agent outputs

@@ -133,3 +133,89 @@ def send_zone_alert(
     lines.append("📈 <i>Beat the ASPP Scanner</i>")
 
     return send_alert("\n".join(lines), token=token, chat_id=chat_id)
+
+
+# ── YouTube summary alerts ─────────────────────────────────────────
+
+_STANCE_EMOJI = {
+    "bullish": "🟢",
+    "bearish": "🔴",
+    "neutral": "⚪",
+    "mixed":   "🟡",
+}
+
+# Telegram caps a single message at 4096 chars. We leave headroom for headers.
+_TG_BODY_LIMIT = 3800
+
+
+def _html_escape(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def send_video_summary(
+    summary,
+    token: str | None = None,
+    chat_id: str | None = None,
+) -> dict:
+    """
+    Send a short, HTML-formatted Telegram message for a YouTube VideoSummary.
+
+    `summary` is duck-typed: any object/dict exposing title, url, published_at,
+    tldr, key_insights, tickers_mentioned, stance.
+    """
+    # Accept either a Pydantic model or a plain dict.
+    def _get(field, default=""):
+        if hasattr(summary, field):
+            return getattr(summary, field, default)
+        if isinstance(summary, dict):
+            return summary.get(field, default)
+        return default
+
+    title = _html_escape(str(_get("title", "") or "(untitled)"))
+    url = str(_get("url", "") or "")
+    published_at = str(_get("published_at", "") or "")[:10]  # YYYY-MM-DD
+    tldr = _html_escape(str(_get("tldr", "") or ""))
+    insights = list(_get("key_insights", []) or [])
+    tickers = list(_get("tickers_mentioned", []) or [])
+    stance = str(_get("stance", "neutral") or "neutral").lower()
+    emoji = _STANCE_EMOJI.get(stance, "⚪")
+
+    lines: list[str] = [
+        f"📺 <b>{title}</b>",
+    ]
+    if published_at:
+        lines.append(f"📅 {published_at}")
+    if url:
+        lines.append(f'<a href="{_html_escape(url)}">Watch on YouTube</a>')
+    lines.append("")
+
+    if tldr:
+        lines.append(f"<b>TL;DR:</b> {tldr}")
+        lines.append("")
+
+    if insights:
+        lines.append("<b>Key insights:</b>")
+        for bullet in insights[:7]:
+            b = _html_escape(str(bullet).strip())
+            if b:
+                lines.append(f"• {b}")
+        lines.append("")
+
+    if tickers:
+        tag_line = " ".join(f"${_html_escape(t)}" for t in tickers[:12])
+        lines.append(f"<b>Tickers:</b> {tag_line}")
+
+    lines.append(f"<b>Stance:</b> {emoji} {stance.capitalize()}")
+    lines.append("")
+    lines.append("📈 <i>Micha.Stocks summarizer</i>")
+
+    message = "\n".join(lines)
+    if len(message) > _TG_BODY_LIMIT:
+        message = message[:_TG_BODY_LIMIT] + "\n…(truncated)"
+
+    return send_alert(message, token=token, chat_id=chat_id)

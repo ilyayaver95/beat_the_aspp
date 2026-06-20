@@ -448,4 +448,5 @@ def _run_fresh_analysis(ticker: str) -> None:
         period="1y",
         stream_output=False,
         llm_provider="api",
+        open_browser=False,  # scanner runs in a loop — no tab spam.
     )

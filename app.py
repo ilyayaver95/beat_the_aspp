@@ -157,6 +157,7 @@ def run_analysis_cached(ticker: str, provider: str, model: str,
         llm_provider=provider,
         llm_model=model if provider in ("ollama", "groq") else None,
         progress_callback=progress_callback,
+        open_browser=False,  # Streamlit renders the HTML inline; no popup tabs.
     )
     date_str = datetime.now().strftime("%Y-%m-%d")
     pattern = f"reports/{ticker}_{date_str}.html"
@@ -405,6 +406,32 @@ with st.sidebar:
                 st.session_state.pop("scan_results", None)
                 st.rerun()
 
+        # ── Analyze All Favorites → small-card grid ──────────────
+        if st.button(
+            "📊 Analyze All Favorites",
+            use_container_width=True,
+            type="primary",
+            help=(
+                "Runs a fresh multi-agent analysis for every favorite, then "
+                "shows a compact grid of cards. Does not render the full HTML "
+                "report. Each ticker uses the LLM provider selected on the right."
+            ),
+        ):
+            # Clear any other view so the grid takes over the main area.
+            st.session_state.pop("view_cache", None)
+            st.session_state.pop("scan_results", None)
+            st.session_state["scanning_tickers"] = set()
+            st.session_state["show_favorites_grid"] = True
+            st.session_state["fav_grid_run_pending"] = True  # triggers fresh analyses
+            st.rerun()
+
+        if st.session_state.get("show_favorites_grid"):
+            if st.button("✖ Close grid", use_container_width=True, key="close_fav_grid"):
+                st.session_state.pop("show_favorites_grid", None)
+                st.session_state.pop("fav_grid_run_pending", None)
+                st.session_state.pop("fav_grid_results", None)
+                st.rerun()
+
     if active_scans:
         st.caption(f"Scanning: {', '.join(sorted(active_scans))}")
 
@@ -590,6 +617,284 @@ def _cost_tracker_panel() -> None:
 _cost_tracker_panel()
 st.divider()
 
+
+# ══════════════════════════════════════════════════════════════════
+# ── "Analyze All Favorites" grid ──────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+
+def _verdict_color(verdict: str) -> str:
+    v = (verdict or "").upper()
+    if "STRONG BUY" in v: return "#1b9e3a"
+    if "BUY" in v:        return "#2ecc71"
+    if "STRONG SELL" in v:return "#7a1f1f"
+    if "SELL" in v:       return "#e74c3c"
+    if "HOLD" in v:       return "#9aa0a6"
+    return "#9aa0a6"
+
+
+def _score_color(score: float) -> str:
+    if score is None:
+        return "#9aa0a6"
+    if score >= 7.5: return "#2ecc71"
+    if score >= 5.0: return "#f1c40f"
+    if score >= 3.0: return "#e67e22"
+    return "#e74c3c"
+
+
+def _format_age(analysis_date_str: str) -> str:
+    """Return e.g. '2d ago' / 'just now' for a stored analysis_date."""
+    try:
+        dt = datetime.strptime(analysis_date_str, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        try:
+            dt = datetime.strptime(analysis_date_str[:10], "%Y-%m-%d")
+        except ValueError:
+            return ""
+    delta = datetime.now() - dt
+    secs = delta.total_seconds()
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{int(secs // 60)}m ago"
+    if secs < 86400:
+        return f"{int(secs // 3600)}h ago"
+    return f"{int(secs // 86400)}d ago"
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _fetch_sparkline_data(ticker: str) -> list[float] | None:
+    """Return ~30 trading days of closing prices for a tiny chart. Cached 30 min."""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(ticker).history(period="1mo", interval="1d")
+        if hist is None or hist.empty:
+            return None
+        closes = [float(x) for x in hist["Close"].tolist() if x == x]  # drop NaN
+        return closes or None
+    except Exception:
+        return None
+
+
+def _render_sparkline(ticker: str, current_price: float | None) -> None:
+    """Render a tiny price chart inside a card. No axes, just a line."""
+    import plotly.graph_objects as go
+    prices = _fetch_sparkline_data(ticker)
+    if not prices or len(prices) < 2:
+        st.caption("📉 no chart data")
+        return
+    first = prices[0]
+    last = prices[-1]
+    line_color = "#2ecc71" if last >= first else "#e74c3c"
+    fig = go.Figure(go.Scatter(
+        x=list(range(len(prices))), y=prices,
+        mode="lines", line=dict(color=line_color, width=2),
+        hovertemplate="$%{y:.2f}<extra></extra>",
+    ))
+    fig.update_layout(
+        height=90, margin=dict(l=0, r=0, t=4, b=4),
+        showlegend=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(visible=False, fixedrange=True),
+        yaxis=dict(visible=False, fixedrange=True),
+    )
+    st.plotly_chart(
+        fig, use_container_width=True,
+        config={"displayModeBar": False, "staticPlot": True},
+        key=f"sparkline_{ticker}",
+    )
+
+
+def _render_favorite_card(ticker: str, payload: dict | None) -> None:
+    """One card. payload is the dict from analysis_store.load_analysis or None."""
+    final = (payload or {}).get("final", {}) if payload else {}
+    error = (payload or {}).get("__error__") if payload else None
+
+    verdict = final.get("verdict") or ""
+    composite = final.get("composite_score")
+    tech_s = final.get("technical_score")
+    fund_s = final.get("fundamental_score")
+    sent_s = final.get("sentiment_score")
+    current = final.get("current_price")
+    target = final.get("price_target") or "—"
+    age_str = _format_age((payload or {}).get("analysis_date", "")) if payload else ""
+
+    st.markdown(
+        f"<div style='font-size:1.4rem;font-weight:700;color:#fff;"
+        f"margin-bottom:2px'>{ticker}</div>",
+        unsafe_allow_html=True,
+    )
+
+    _render_sparkline(ticker, current if isinstance(current, (int, float)) else None)
+
+    if error:
+        st.error(f"❌ {error}", icon="⚠️")
+        return
+
+    if not payload or not final:
+        st.caption("No analysis yet — press **📊 Analyze All Favorites** in the sidebar.")
+        return
+
+    # Verdict badge
+    vcol = _verdict_color(verdict)
+    st.markdown(
+        f"<div style='background:{vcol};color:white;border-radius:6px;"
+        f"padding:4px 8px;text-align:center;font-weight:700;font-size:.85rem;"
+        f"margin:6px 0 4px 0'>{verdict or 'N/A'}</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Composite score
+    if isinstance(composite, (int, float)):
+        cc = _score_color(composite)
+        st.markdown(
+            f"<div style='text-align:center;margin:2px 0'>"
+            f"<span style='font-size:1.9rem;font-weight:700;color:{cc}'>"
+            f"{composite:.1f}</span>"
+            f"<span style='color:#888;font-size:.8rem'> / 10</span></div>",
+            unsafe_allow_html=True,
+        )
+
+    # Sub-score mini bars
+    def _bar(label: str, val):
+        if not isinstance(val, (int, float)):
+            return
+        pct = max(0.0, min(1.0, val / 10.0)) * 100
+        col = _score_color(val)
+        st.markdown(
+            f"<div style='font-size:.72rem;color:#aaa;display:flex;justify-content:space-between'>"
+            f"<span>{label}</span><span>{val:.1f}</span></div>"
+            f"<div style='background:#222;height:5px;border-radius:3px;margin-bottom:4px'>"
+            f"<div style='width:{pct:.0f}%;background:{col};height:5px;border-radius:3px'></div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    _bar("Tech",  tech_s)
+    _bar("Fund",  fund_s)
+    _bar("Sent",  sent_s)
+
+    # Price + target line
+    price_str = f"${current:.2f}" if isinstance(current, (int, float)) else "—"
+    st.markdown(
+        f"<div style='font-size:.78rem;color:#bbb;margin-top:4px'>"
+        f"<b style='color:#eee'>{price_str}</b> · Target: {target}</div>",
+        unsafe_allow_html=True,
+    )
+
+    if age_str:
+        st.caption(f"⏱ {age_str}")
+
+
+def _render_favorites_grid(fav_tickers: list[str]) -> None:
+    """Lay out the favorites as a responsive 3-column grid of cards."""
+    from analysis_store import load_analysis
+
+    st.markdown("### 📊 Favorites — Analysis Grid")
+    if not fav_tickers:
+        st.info("No favorites yet. Add some tickers from the main analyzer.")
+        return
+
+    cols_per_row = 3
+    for row_start in range(0, len(fav_tickers), cols_per_row):
+        row = fav_tickers[row_start:row_start + cols_per_row]
+        cols = st.columns(cols_per_row, gap="small")
+        for col, tkr in zip(cols, row):
+            with col:
+                with st.container(border=True):
+                    payload = load_analysis(tkr)
+                    # Inject any per-ticker analysis error captured during the run.
+                    err_map = st.session_state.get("fav_grid_errors", {}) or {}
+                    if tkr in err_map and not payload:
+                        payload = {"__error__": err_map[tkr]}
+                    _render_favorite_card(tkr, payload)
+        # Padding for short last rows so the grid keeps even width
+        for col in cols[len(row):]:
+            with col:
+                st.empty()
+
+
+def _run_analyses_for_grid(fav_tickers: list[str], provider: str, model: str) -> None:
+    """
+    Sequentially run a fresh multi-agent analysis for every favorite ticker.
+    Saves results via analysis_store (handled inside orchestrator) so the
+    grid renderer just reads them back.
+    """
+    if not fav_tickers:
+        return
+
+    # Pre-flight: provider key check.
+    if provider == "api" and not os.environ.get("ANTHROPIC_API_KEY"):
+        st.error("No Anthropic API key set — pick Groq, or paste a key in 🔑 API Keys.")
+        return
+    if provider == "groq" and not os.environ.get("GROQ_API_KEY"):
+        st.error("No Groq API key set — paste one in 🔑 API Keys (free at console.groq.com).")
+        return
+
+    errors: dict[str, str] = {}
+    provider_label = {"api": "Anthropic", "groq": "Groq", "ollama": "Ollama"}.get(provider, provider)
+
+    with st.status(
+        f"Analyzing {len(fav_tickers)} favorites with {provider_label}…",
+        expanded=True,
+    ) as status:
+        bar = st.progress(0.0, text="Starting…")
+
+        def _cb(level: str, message: str) -> None:
+            if level in ("rate_limit", "warn"):
+                st.warning(message)
+            elif level in ("error", "auth", "connection"):
+                st.error(message)
+            else:
+                st.write(message)
+
+        for i, tkr in enumerate(fav_tickers):
+            bar.progress(i / len(fav_tickers), text=f"Analyzing {tkr} ({i+1}/{len(fav_tickers)})…")
+            try:
+                run_analysis_cached(
+                    tkr, provider, model,
+                    progress_callback=_cb,
+                )
+                st.write(f"✅ {tkr} done")
+            except Exception as e:
+                errors[tkr] = f"{type(e).__name__}: {e}"
+                st.error(f"❌ {tkr}: {type(e).__name__}: {e}")
+
+        bar.progress(1.0, text="Done.")
+        status.update(
+            label=(
+                f"Done — {len(fav_tickers) - len(errors)} succeeded, "
+                f"{len(errors)} failed."
+            ),
+            state="complete",
+        )
+
+    st.session_state["fav_grid_errors"] = errors
+
+
+# ── Gate: if the grid is requested, render it and skip the rest ───
+if st.session_state.get("show_favorites_grid"):
+    _favs = load_favorites()
+    # Use whatever provider+model the picker last persisted, or sensible
+    # free-tier defaults on the very first render.
+    _grid_provider = st.session_state.get("last_used_provider") or "groq"
+    _grid_model = (
+        st.session_state.get("last_used_model")
+        or ("llama-3.1-8b-instant" if _grid_provider == "groq" else "llama3.2")
+    )
+    if st.session_state.pop("fav_grid_run_pending", False):
+        _run_analyses_for_grid(_favs, provider=_grid_provider, model=_grid_model)
+    _render_favorites_grid(_favs)
+    st.divider()
+    _provider_label = {
+        "groq": "Groq (free)",
+        "api": "Anthropic (paid)",
+        "ollama": "Ollama (local)",
+    }.get(_grid_provider, _grid_provider)
+    st.caption(
+        f"Last run used **{_provider_label} / {_grid_model}**. "
+        "Re-press **📊 Analyze All Favorites** in the sidebar to run a fresh pass."
+    )
+    st.stop()
+
 # ── Input row ──────────────────────────────────────────────────────
 col1, col2, col3 = st.columns([2, 2, 1])
 
@@ -656,6 +961,11 @@ with col3:
         )
     else:
         ollama_model = "llama3.2"
+
+# Persist the picker selection so the sidebar "Analyze All Favorites" button
+# (which fires before the picker on the next rerun) can use it.
+st.session_state["last_used_provider"] = provider
+st.session_state["last_used_model"] = ollama_model
 
 # ── Action buttons ─────────────────────────────────────────────────
 # Detect saved reports for the current ticker so we can show the View button.
